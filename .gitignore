@@ -1,0 +1,7 @@
+# 根目錄匯出備份用 JSON 檔（不進版控）
+*.bak
+*.hash
+/*.json
+!manifest.json
+!version.json
+.env

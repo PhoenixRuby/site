@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>卡片清單</title> 
+  <script>(function(){var t=localStorage.getItem('appTheme')||'system';document.documentElement.setAttribute('data-theme',t);var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme:dark)').matches);var l=document.createElement('link');l.rel='stylesheet';l.id='hljs-theme';l.href='libs/atom-one-'+(d?'dark':'light')+'.min.css';document.head.appendChild(l)})()</script>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="manifest" href="manifest.json">
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./service-worker.js');
+  }
+</script>
+</head>
+<body>
+
+<!-- Countdown Circle is now injected by plugins/totp.js -->
+
+<!-- Card Grid -->
+<div id="card-wrapper"></div>
+
+
+<!-- Sort / Export / Import modals are injected by plugins/card-tools.js -->
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- Data Definition (user configuration) -->
+<script>
+    const defaultData = [];
+</script>
+
+<!-- Core Logic -->
+<script src="js/icons.js"></script>
+<script src="js/nicescroll.js"></script>
+<script src="js/base.js"></script>
+<script src="js/crypto-export.js"></script>
+<script src="js/guard.js"></script>
+<script src="js/about.js"></script>
+</body>
+</html>
