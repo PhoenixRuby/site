@@ -55,7 +55,8 @@ registerPlugin('card-export', {
             <button class="btn-quick" id="exportSelectAllBtn">全選</button>
             <button class="btn-quick" id="exportDeselectAllBtn">取消全選</button>
           </div>
-          <div class="export-enc-row"><input type="checkbox" id="exportEncChk"><label for="exportEncChk">🔑 加密匯出（產生金鑰）</label></div>
+          <div class="export-enc-row"><input type="checkbox" id="exportChatChk" checked><label for="exportChatChk">一併匯出 Chat 手動新增的環境設定（URL／廠商代碼／金鑰）</label></div>
+           <div class="export-enc-row"><input type="checkbox" id="exportEncChk"><label for="exportEncChk">🔑 加密匯出（產生金鑰）</label></div>
           <div class="modal-footer">
             <button class="btn-reset" id="exportCancelBtn">取消</button>
             <button class="btn-confirm" id="exportConfirmBtn">匯出所選</button>
@@ -144,9 +145,30 @@ registerPlugin('card-export', {
         });
       });
 
-      const str = JSON.stringify(exportData, null, 2);
+      const includeChat = document.getElementById('exportChatChk').checked;
+      let payload = exportData; // 未選 Chat 時維持舊版陣列格式
+      if (includeChat) {
+        let chatProfiles = null;
+        try {
+          const raw = localStorage.getItem('chat_environment_profiles_v1');
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.profiles)) chatProfiles = parsed;
+          }
+        } catch (e) { showToast('Chat 環境設定讀取失敗，請檢查 localStorage'); return; }
+        payload = {
+          format: 'card-backup-v2',
+          cards: exportData,
+          chat: {
+            environments: chatProfiles,
+            autoTimestamp: localStorage.getItem('chat_auto_timestamp') === 'true'
+          }
+        };
+      }
+      const str = JSON.stringify(payload, null, 2);
       const fileName = `卡片清單_${new Date().toISOString().slice(0, 10)}`;
       const useEnc = document.getElementById('exportEncChk').checked;
+      if (includeChat && payload.chat.environments?.profiles?.length && !useEnc && !confirm('匯出檔將包含未加密的環境金鑰，確定要繼續？建議勾選「加密匯出」。')) return;
 
       function showResult(encrypted) {
         const list = document.getElementById('exportList');
@@ -154,6 +176,7 @@ registerPlugin('card-export', {
         if (!encrypted && modules.size > 0) {
           resultHTML += `<div class="export-result-warn"><strong>⚠ 注意：</strong>匯出的卡片包含以下模組功能，對方需要有對應的模組檔案才能使用：<div class="export-result-files">${[...modules].map(m => `<code>modules/${m}.js</code>`).join('')}</div>請記得將上述檔案一併提供給對方。</div>`;
         }
+        if (includeChat) resultHTML += '<div>Chat 環境設定：' + (payload.chat.environments?.profiles?.length || 0) + ' 組（含自動時間戳偏好）</div>';
         resultHTML += '</div>';
         list.innerHTML = resultHTML;
         const quickDiv = document.querySelector('#exportModalBg .modal-quick');
@@ -161,10 +184,13 @@ registerPlugin('card-export', {
         const encRow = document.querySelector('.export-enc-row');
         if (quickDiv) quickDiv.style.display = 'none';
         if (encRow) encRow.style.display = 'none';
+        const chatRow = document.getElementById('exportChatChk')?.closest('.export-enc-row');
+        if (chatRow) chatRow.style.display = 'none';
         if (footerDiv) footerDiv.innerHTML = '<button class="btn-confirm" id="exportDoneBtn" style="flex:1">完成</button>';
         document.getElementById('exportDoneBtn').addEventListener('click', () => {
           if (quickDiv) quickDiv.style.display = '';
           if (encRow) encRow.style.display = '';
+          if (chatRow) chatRow.style.display = '';
           hideExportModal();
         });
       }

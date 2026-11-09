@@ -69,6 +69,7 @@ registerPlugin('card-import', {
           <div class="import-drop" id="importDrop">📁 點擊選擇檔案 或 拖曳 JSON 至此</div>
           <input type="file" id="importFileInput" accept=".json" style="display:none">
           <div class="import-analysis" id="importAnalysis"></div>
+          <label id="importChatRow" style="display:none;align-items:center;gap:8px;font-size:13px;color:var(--text-dim)"><input type="checkbox" id="importChatChk" checked> 一併匯入 Chat 環境設定（同名設定覆蓋、其餘新增）及自動時間戳偏好</label>
           <div class="import-actions">
             <button class="btn-reset" id="importCancelBtn">取消</button>
             <button class="btn-confirm" id="importConfirmBtn" disabled>確認匯入</button>
@@ -86,9 +87,12 @@ registerPlugin('card-import', {
 
     let importPendingData = null;
     let dupActions = {};
+    let pendingChat = null;
 
     function showImportModal() {
       importPendingData = null;
+      pendingChat = null;
+      document.getElementById('importChatRow').style.display = 'none';
       dupActions = {};
       analysisDiv.style.display = 'none';
       analysisDiv.innerHTML = '';
@@ -101,6 +105,7 @@ registerPlugin('card-import', {
     function hideImportModal() {
       importModalBg.classList.remove('open');
       importPendingData = null;
+      pendingChat = null;
     }
 
     function handleImportFile(file) {
@@ -123,6 +128,15 @@ registerPlugin('card-import', {
           let items = [];
           if (Array.isArray(parsed)) {
             items = parsed;
+          } else if (parsed && parsed.format === 'card-backup-v2' && Array.isArray(parsed.cards)) {
+            items = parsed.cards;
+            if (parsed.chat != null) {
+              const env = parsed.chat.environments;
+              if (env != null && (!Array.isArray(env.profiles) || !env.profiles.every(p => p && typeof p.id === 'string' && typeof p.label === 'string' && typeof p.url === 'string' && typeof p.clientid === 'string' && typeof p.key === 'string'))) {
+                throw new Error('Chat 環境設定格式不正確');
+              }
+              pendingChat = parsed.chat;
+            }
           } else if (parsed.themes && parsed.favorites) {
             showImportError('這是「書籤我的最愛」格式，無法匯入至站台卡片。\n\n請在書籤頁面使用匯入功能。');
             return;
@@ -131,7 +145,7 @@ registerPlugin('card-import', {
             return;
           }
           const valid = items.every(it => it.title && it.itemlist);
-          if (!valid || items.length === 0) {
+          if (!valid || (items.length === 0 && !pendingChat)) {
             showImportError('JSON 內容不符合站台格式：每個項目需包含 title 與 itemlist 欄位。');
             return;
           }
@@ -151,6 +165,8 @@ registerPlugin('card-import', {
           });
 
           importPendingData = items;
+          document.getElementById('importChatRow').style.display = pendingChat ? 'flex' : 'none';
+          document.getElementById('importChatChk').checked = true;
           dupActions = {};
           importDrop.textContent = '✅ 已讀取：' + fileName;
           showAnalysis(items);
@@ -299,11 +315,11 @@ registerPlugin('card-import', {
       });
 
       analysisDiv.appendChild(listDiv);
-      confirmBtn.disabled = false;
+      confirmBtn.disabled = items.length === 0 && !pendingChat;
     }
 
     function confirmImport() {
-      if (!importPendingData || importPendingData.length === 0) return;
+      if (!importPendingData) return;
 
       const existingMap = {};
       const existingIdMap = {};
@@ -350,8 +366,35 @@ registerPlugin('card-import', {
         renderGrid();
       }
 
+      let chatCount = 0;
+      if (pendingChat && document.getElementById('importChatChk').checked) {
+        try {
+          const incoming = pendingChat.environments;
+          if (incoming && incoming.profiles.length) {
+            const key = 'chat_environment_profiles_v1';
+            let existing = { profiles: [], selectedId: '' };
+            try {
+              const old = JSON.parse(localStorage.getItem(key));
+              if (old && Array.isArray(old.profiles)) existing = old;
+            } catch (_) {}
+            const merged = existing.profiles.map(p => ({...p}));
+            for (const p of incoming.profiles) {
+              const idx = merged.findIndex(x => x.label === p.label || x.id === p.id);
+              if (idx >= 0) merged[idx] = { ...p, id: merged[idx].id };
+              else merged.push({...p});
+              chatCount++;
+            }
+            const selected = incoming.profiles.find(p => p.id === incoming.selectedId);
+            const selectedMerged = selected && merged.find(p => p.label === selected.label);
+            localStorage.setItem(key, JSON.stringify({ profiles: merged, selectedId: selectedMerged?.id || existing.selectedId || merged[0]?.id || '' }));
+          }
+          if (typeof pendingChat.autoTimestamp === 'boolean') localStorage.setItem('chat_auto_timestamp', String(pendingChat.autoTimestamp));
+        } catch (e) { showToast('卡片已處理，但 Chat 設定匯入失敗：' + e.message); return; }
+      }
+      const chatImported = pendingChat && document.getElementById('importChatChk').checked;
       hideImportModal();
       const parts = [];
+      if (chatImported) parts.push(`Chat 環境設定 ${chatCount} 組`);
       if (addedCount > 0) parts.push(`新增 ${addedCount} 個`);
       if (overwrittenCount > 0) parts.push(`覆蓋 ${overwrittenCount} 個`);
       if (skippedCount > 0) parts.push(`跳過 ${skippedCount} 個`);

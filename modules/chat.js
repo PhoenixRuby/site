@@ -147,7 +147,7 @@ textarea{max-width:350px}
                 pattern="\\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])([01]\\d|2[0-3])([0-5]\\d)([0-5]\\d)"
                 title="請輸入 14 位 yyyyMMddHHmmss（年4位、月01–12、日01–31、時00–23、分秒00–59）">
               <label for="chatAutoTimestamp" style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:var(--text);cursor:pointer" title="勾選後，每次按加密都更新為當下時間">
-                <input type="checkbox" id="chatAutoTimestamp" style="width:15px;height:15px;flex:none;accent-color:var(--accent)">
+                <input type="checkbox" id="chatAutoTimestamp" checked style="width:15px;height:15px;flex:none;accent-color:var(--accent)">
                 自動時間
               </label>
               <span class="validation-message" id="timestamp-error"></span>
@@ -887,7 +887,7 @@ textarea{max-width:350px}
     // 記住使用者的勾選狀態（僅儲存在本機瀏覽器）
     const autoTsCheckbox = document.getElementById('chatAutoTimestamp');
     if (autoTsCheckbox) {
-      autoTsCheckbox.checked = localStorage.getItem('chat_auto_timestamp') === 'true';
+      autoTsCheckbox.checked = localStorage.getItem('chat_auto_timestamp') !== 'false';
       autoTsCheckbox.addEventListener('change', () => {
         localStorage.setItem('chat_auto_timestamp', String(autoTsCheckbox.checked));
       });
