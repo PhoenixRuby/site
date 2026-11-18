@@ -1,0 +1,93 @@
+/* Shared two-pane sorting dialog */
+.priority-sort-dialog .priority-sort-popup{width:min(1100px,96vw);max-height:min(85vh,850px)}
+.priority-sort-dialog .priority-sort-panels{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;min-height:0;flex:1}
+.priority-sort-dialog .priority-sort-panel{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--border);border-radius:10px;background:var(--surface2);overflow:hidden}
+.priority-sort-dialog .priority-sort-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:11px 12px;border-bottom:1px solid var(--border);font-size:13px}
+.priority-sort-dialog .priority-sort-panel-head strong{color:var(--text-dim)}
+.priority-sort-dialog .priority-sort-panel-head strong span,.priority-sort-dialog .priority-sort-head-note{font-size:11px;font-weight:400;color:var(--text-dim)}
+.priority-sort-dialog input[type="search"]{width:min(175px,100%);min-width:0;background:var(--surface);border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:6px 9px;font-size:12px;outline:none}
+.priority-sort-dialog input[type="search"]:focus{border-color:var(--accent)}
+.priority-sort-dialog .priority-sort-items{min-height:230px;overflow-y:auto;flex:1;padding:9px;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
+.priority-sort-dialog .priority-sort-row{position:relative;display:flex;align-items:center;gap:8px;min-height:49px;padding:7px 9px;background:var(--surface);border:1px solid var(--border);border-radius:7px;user-select:none;transition:background .15s,border-color .15s;min-width:0}
+.priority-sort-dialog .priority-sort-row:hover{border-color:var(--accent)}
+.priority-sort-dialog .priority-sort-available-row{cursor:pointer}
+.priority-sort-dialog .priority-sort-add-icon{width:24px;height:24px;display:grid;place-items:center;border-radius:5px;background:var(--surface3);color:var(--accent);font-size:17px;flex:none}
+.priority-sort-dialog .priority-sort-grip{font-size:19px;cursor:grab;color:var(--text-dim);flex:none;line-height:1}
+.priority-sort-dialog .priority-sort-row:active .priority-sort-grip{cursor:grabbing}
+.priority-sort-dialog .priority-sort-badge{display:grid;place-items:center;width:23px;height:23px;border-radius:5px;flex:none;background:var(--accent);color:#111;font:700 11px 'IBM Plex Mono',monospace}
+.priority-sort-dialog .priority-sort-badge::before{content:none!important}
+.priority-sort-dialog .priority-sort-info{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+.priority-sort-dialog .priority-sort-label{font-size:12px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.priority-sort-dialog .priority-sort-url{font-size:10px;color:var(--muted);font-family:'IBM Plex Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.priority-sort-dialog .priority-sort-actions{display:flex;align-items:center;gap:3px;flex:none}
+.priority-sort-dialog .priority-sort-actions button{width:25px;height:26px;padding:0;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--text-dim);cursor:pointer;font-size:15px}
+.priority-sort-dialog .priority-sort-actions button:hover:not(:disabled){background:var(--surface3);color:var(--text-dim);border-color:var(--border)}
+.priority-sort-dialog .priority-sort-actions button:disabled{opacity:.23;cursor:default}
+.priority-sort-dialog .priority-sort-actions .priority-sort-remove:hover{color:#f87171}
+.priority-sort-dialog .priority-sort-empty{padding:30px 12px;text-align:center;font-size:12px;color:var(--text-dim);border:1px dashed var(--border);border-radius:8px}
+.priority-sort-dialog .priority-sort-dragging{opacity:.35;border-style:dashed}
+.priority-sort-dialog .priority-sort-drop-before::before,.priority-sort-dialog .priority-sort-drop-after::after{content:'放在這裡';position:absolute;left:6px;right:6px;height:0;border-top:3px solid var(--accent);z-index:2;color:var(--accent);font-size:10px;font-weight:700;text-align:center;line-height:1;pointer-events:none;text-shadow:0 1px var(--surface),0 -1px var(--surface)}
+.priority-sort-dialog .priority-sort-drop-before::before{top:-5px}
+.priority-sort-dialog .priority-sort-drop-after::after{bottom:-5px}
+.priority-sort-dialog .priority-sort-drop-empty{outline:2px dashed var(--accent);outline-offset:-5px;background:var(--surface3)}
+.priority-sort-dialog .priority-sort-priority-panel{border-color:var(--accent)}
+.priority-sort-dialog .modal-quick{flex-wrap:wrap}
+@media(max-width:690px){.priority-sort-dialog .priority-sort-popup{max-height:92vh}.priority-sort-dialog .priority-sort-panels{grid-template-columns:1fr;grid-template-rows:minmax(145px,1fr) minmax(180px,1.2fr);gap:9px}.priority-sort-dialog .priority-sort-items{min-height:0}.priority-sort-dialog .priority-sort-panel-head{padding:8px}}
+
+/* Modal visibility: standalone CSS must not rely on old shared sort styles. */
+.priority-sort-dialog .priority-sort-popup{box-sizing:border-box;display:flex;flex-direction:column;min-height:0;height:min(740px,85dvh);max-height:calc(100dvh - 32px);overflow:hidden}
+.priority-sort-dialog .priority-sort-panels{overflow:hidden}
+.priority-sort-dialog .priority-sort-items{min-height:0;max-height:100%;overflow-y:auto;align-content:start}
+.priority-sort-dialog .priority-sort-row{flex:0 0 auto}
+/* Muted labels with a single bright highlight color. */
+.priority-sort-dialog .priority-sort-label{color:var(--text-dim);font-weight:500}
+.priority-sort-dialog .priority-sort-panel-head strong{color:var(--text-dim)}
+.priority-sort-dialog .priority-sort-add-icon{color:#4fc3e4;background:rgba(79,195,228,.12)}
+.priority-sort-dialog .priority-sort-badge{background:#4fc3e4;color:#12202a}
+.priority-sort-dialog .priority-sort-priority-panel{border-color:#4fc3e4}
+.priority-sort-dialog input[type="search"]:focus{border-color:#4fc3e4;box-shadow:0 0 0 2px rgba(79,195,228,.14)}
+.priority-sort-dialog .priority-sort-row:hover{border-color:#4fc3e4}
+.priority-sort-dialog .priority-sort-actions button:hover:not(:disabled){color:#4fc3e4}
+.priority-sort-dialog .priority-sort-actions .priority-sort-remove:hover:not(:disabled){color:#f87171}
+.priority-sort-dialog .priority-sort-match{background:#f2c65d;color:#202020;border-radius:2px;padding:0 1px;font-weight:700}
+.priority-sort-dialog .priority-sort-drop-before::before,.priority-sort-dialog .priority-sort-drop-after::after{border-color:#4fc3e4;color:#4fc3e4}
+.priority-sort-dialog .priority-sort-drop-empty{outline-color:#4fc3e4}
+@media(max-width:690px){.priority-sort-dialog .priority-sort-popup{height:min(850px,92dvh);max-height:calc(100dvh - 20px)}}
+
+/* Drag from available list to priority list. */
+.priority-sort-dialog .priority-sort-available-row{cursor:grab}
+.priority-sort-dialog .priority-sort-available-row:active{cursor:grabbing}
+.priority-sort-dialog .priority-sort-available-row.priority-sort-dragging{opacity:.42;border-style:dashed}
+.priority-sort-dialog .priority-sort-priority.priority-sort-drop-empty{outline:2px dashed #4fc3e4;outline-offset:-5px;background:rgba(79,195,228,.09)}
+.priority-sort-dialog .priority-sort-drop-before::before,.priority-sort-dialog .priority-sort-drop-after::after{border-top-width:4px}
+
+
+
+/* Sort-only size (shared dialog shell lives in base.css). */
+.priority-sort-dialog .priority-sort-popup{width:min(1100px,calc(100vw - 32px));height:min(740px,85dvh)}
+
+
+
+/* Sort content sizing only; spacing is owned by shared .app-dialog-body/.app-dialog-footer. */
+.priority-sort-dialog .app-dialog-body{overflow:hidden}
+.priority-sort-dialog .priority-sort-panels{min-height:0;flex:1 1 auto}
+.priority-sort-dialog .modal-quick{margin:0;flex:0 0 auto}
+
+/* Sort-only list actions; dialog footer layout is shared by base.css. */
+.priority-sort-dialog .priority-sort-panel-tools{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:9px;border-top:1px solid var(--border)}
+.priority-sort-dialog .priority-sort-panel-tools-priority{justify-content:flex-end}
+.priority-sort-dialog .priority-sort-panel-tools .btn-quick{white-space:nowrap}
+
+/* Sorting mode: active field button only; manual changes display custom mode. */
+.priority-sort-dialog .priority-sort-panel-tools .btn-quick.priority-sort-mode-active{background:color-mix(in srgb,var(--accent) 18%,var(--surface2));border-color:var(--accent);color:var(--accent);font-weight:700}
+
+/* Field indicator follows the active sort mode; both title and URL stay visible. */
+.priority-sort-dialog .priority-sort-field-indicator{display:none;flex:none;margin-right:5px;color:var(--accent);font-size:10px;vertical-align:1px}
+.priority-sort-dialog .priority-sort-mode-title .priority-sort-title-indicator,
+.priority-sort-dialog .priority-sort-mode-url .priority-sort-url-indicator{display:inline}
+.priority-sort-dialog .priority-sort-mode-title .priority-sort-label,
+.priority-sort-dialog .priority-sort-mode-url .priority-sort-url{color:var(--accent)}
+.priority-sort-dialog .priority-sort-no-url{color:var(--muted);font-style:italic;opacity:.75}
+
+/* Neutral panel headings, independent of the theme's highlighted text color. */
+.priority-sort-dialog .priority-sort-panel-head strong { color: var(--text-dim); }

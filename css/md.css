@@ -1,0 +1,180 @@
+.md-dialog .md-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.md-dialog .md-content > .md-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.md-dialog .md-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: inherit;
+}
+
+.md-dialog .md-search input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #828282;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.md-dialog .md-search input[type="search"]:focus {
+  border-color: #828282;
+  outline: 2px solid #828282;
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.md-dialog .md-search-count:empty {
+  display: none;
+}
+
+.md-dialog [hidden]:not([hidden="until-found"]) {
+  display: none;
+}
+
+/* Reading colors for the Markdown dialogs and Bookmark notes. */
+.md-dialog,
+.bm-reader-inner {
+  --md-text: #e6e8eb;
+  --md-muted: #aeb6c2;
+}
+
+html[data-theme="light"] .md-dialog,
+html[data-theme="light"] .bm-reader-inner {
+  --md-text: #24292f;
+  --md-muted: #57606a;
+}
+
+@media (prefers-color-scheme: light) {
+  html[data-theme="system"] .md-dialog,
+  html[data-theme="system"] .bm-reader-inner {
+    --md-text: #24292f;
+    --md-muted: #57606a;
+  }
+}
+
+.md-dialog .md-sections {
+  color: var(--md-text);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.md-dialog .md-sections > section {
+  margin-block-end: 1.75rem;
+  scroll-margin-top: 0.75rem;
+}
+
+.md-dialog .md-sections :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.4em 0 0.5em;
+  color: var(--md-text);
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.md-dialog .md-sections :is(h1, section > h2) {
+  margin-block-start: 0;
+  padding-block-end: 0.35em;
+  border-bottom: 1px solid var(--border);
+}
+
+.md-dialog .md-sections h1 { font-size: 1.5em; }
+.md-dialog .md-sections h2 { font-size: 1.25em; }
+.md-dialog .md-sections h3 { font-size: 1.08em; }
+.md-dialog .md-sections :is(h4, h5, h6) { font-size: 1em; }
+
+.md-dialog .md-sections :is(p, ul, ol, blockquote, pre, table) {
+  margin-block: 0 1em;
+}
+
+.md-dialog .md-sections :is(ul, ol) {
+  padding-inline-start: 1.5em;
+}
+
+.md-dialog .md-sections li + li {
+  margin-block-start: 0.25em;
+}
+
+.md-dialog .md-sections blockquote {
+  margin-inline: 0;
+  padding-inline-start: 0.875em;
+  border-inline-start: 3px solid var(--border);
+  color: var(--md-muted);
+}
+
+.md-dialog .md-sections hr {
+  margin-block: 1.5em;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.md-dialog .md-sections :is(code, kbd, pre) {
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+.md-dialog .md-sections :is(code, kbd) {
+  padding: 0.12em 0.35em;
+  border-radius: 4px;
+  background: var(--surface2);
+  color: var(--md-text);
+}
+
+.md-dialog .md-sections kbd {
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.md-dialog .md-sections pre {
+  padding: 0.85em 1em;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.md-dialog .md-sections pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.md-dialog .md-sections table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.md-dialog .md-sections :is(th, td) {
+  padding: 0.45em 0.7em;
+  border: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.md-dialog .md-sections th {
+  background: var(--surface2);
+  font-weight: 650;
+}
+
+.md-dialog .md-sections a {
+  color: var(--accent);
+  text-underline-offset: 0.15em;
+}

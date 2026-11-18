@@ -1,0 +1,7 @@
+/* Shared settings layout and controls come from setting.css. */
+.bookmark-setting-box.tb-settings .setting-content{grid-template-rows:auto;align-items:start}
+.bookmark-setting-box .setting-content > .setting-section:first-child{grid-row:1}
+.bookmark-setting-overflow.setting-segments{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bookmark-setting-overflow button:disabled{opacity:.4;cursor:not-allowed;border-color:var(--border)}
+.bookmark-setting-hint{display:block;margin-top:8px;font-size:11px;color:var(--muted)}
+.bookmark-setting-hint[hidden]{display:none}

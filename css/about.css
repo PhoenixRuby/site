@@ -1,0 +1,10 @@
+/* Global About — viewer-help inspired two-column dialog */ 
+.global-about-modal.app-dialog-panel-medium{width: min(1050px,calc(100vw - 32px));height: min(84dvh,780px);overflow: hidden}
+.global-about-modal .global-about-split{flex-direction: row;padding: 0;gap: 0;overflow: hidden}
+.global-about-toc{width: 220px;flex: 0 0 220px;padding: 10px 0;box-sizing: border-box;border-right: 1px solid var(--border);overflow: auto}
+.global-about-toc-item{display: block;width: 100%;text-align: left;border: 0;border-radius: 0;padding: 8px 10px;background: transparent;color: var(--text-dim);font: inherit;font-size: 13px;cursor: pointer;border-left: 3px solid transparent}
+.global-about-toc-item:hover{background: var(--surface2);color: var(--text)}
+.global-about-toc-item.on{background: var(--surface2);color: var(--accent);font-weight: bold;border-left-color: var(--accent)}
+.global-about-body{flex: 1;min-width: 0;overflow-y: auto;overscroll-behavior: contain;padding: 16px 30px 40px;box-sizing: border-box;scrollbar-width: thin;scrollbar-color: var(--border) transparent;background: var(--bg)}
+.global-about-section{margin-bottom: 28px;scroll-margin-top: 12px}
+@media(max-width: 650px){.global-about-toc{width:130px;flex-basis: 130px} .global-about-toc-item{font-size: 12px;padding: 8px 5px} .global-about-body{padding: 12px 14px 30px}}

@@ -1,0 +1,40 @@
+/* Countdown circle */
+.countdown-container{text-align:center;position:fixed;top:12px;z-index:90}
+body.tb-top .countdown-container{top:60px}
+.countdown-circle{position:relative;width:80px;height:80px;margin:0 auto}
+.countdown-circle svg{width:100%;height:100%;transform:rotate(-90deg)}
+.countdown-circle .background-circle{fill:none;stroke:#5b5b5b;stroke-width:8}
+[data-theme="light"] .countdown-circle .background-circle{stroke:#e1e1e1}
+@media(prefers-color-scheme:light){[data-theme="system"] .countdown-circle .background-circle{stroke:#e1e1e1}}
+.countdown-circle .progress-circle{fill:none;stroke:#ffd100;stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 1s linear;opacity: 1;}
+.countdown-circle .time-left{position:absolute;top:50%;left:50%;transform:translate(-50%, -50%);font-size:24px;font-weight:bold;color:var(--text-dim);display:flex;justify-content:center;align-items:center;overflow:hidden}
+.countdown-circle .ripple-circle{position:absolute;top:50%;left:50%;transform:translate(-50%, -50%);width:80px;height:80px;border-radius:50%;border:4px solid #ffd100;box-shadow:0 0 15px #ffd100;filter:blur(2px);opacity:0;pointer-events:none}
+@keyframes ripple-out{0%{transform:translate(-50%, -50%) scale(1);opacity:0.2}100%{transform:translate(-50%, -50%) scale(1.2);opacity:0}}
+.countdown-circle .ripple-circle.animate{animation:ripple-out 0.6s ease-out forwards}
+.countdown-circle .digit-slot{width:0.65em;transition:opacity 0.2s}
+.countdown-circle .digit-wrapper{position:relative;height:1.2em;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.countdown-circle .digit-current, .digit-next{position:absolute;width:100%;text-align:center;line-height:1.2em}
+.countdown-circle .digit-next{transform:translateY(100%)}
+@keyframes slide-up-out{from{transform:translateY(0)}to{transform:translateY(-100%)}}
+@keyframes slide-up-in{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.countdown-circle .digit-wrapper.animating .digit-current{animation:slide-up-out 0.25s cubic-bezier(0.4, 0, 1, 1) forwards}
+.countdown-circle .digit-wrapper.animating .digit-next{animation:slide-up-in 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards}
+
+/* TOTP display styles */
+.totp-group{margin-bottom:25px}
+.totp-title{font-weight:600;color:var(--accent2);margin-bottom:10px;font-size:18px}
+.totp-result{text-align:center;padding:10px 0;border-radius:10px;margin-bottom:0px;position:relative;overflow:hidden;cursor:pointer}
+.totp-result::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(255, 255, 255, 0.05);backdrop-filter:blur(8px)}
+.totp-code{display:inline-flex;justify-content:center;font-size:2.5em;font-weight:bold;color:var(--text-dim);letter-spacing:0;margin-bottom:0;font-family:'Courier New', monospace;position:relative;z-index:1;gap:2px;}
+.digit{display:inline-block;width:1.2em;text-align:center;position:relative;overflow:hidden;border-radius:5px;background:linear-gradient(135deg,#333 0%,#000 100%)}
+[data-theme="light"] .digit{background:linear-gradient(135deg,#e8e8e8 0%,#d0d0d0 100%)}
+@media(prefers-color-scheme:light){[data-theme="system"] .digit{background:linear-gradient(135deg,#e8e8e8 0%,#d0d0d0 100%)}}
+.digit span{display:inline-block;transition:transform 0.5s ease-in-out}
+.digit.flip span{animation:flip 0.5s ease-in-out}
+@keyframes flip{0%{transform:translateY(0)}50%{transform:translateY(-100%)}51%{transform:translateY(100%)}100%{transform:translateY(0)}}
+.totp-code:hover .digit span{transform:scale(1.05)}
+.copy-tick{display:none;position:absolute;top:0;left:0;height:100%;width:100%;line-height:100px;background:rgba(0, 0, 0, 0.4);border-radius:8px;padding:10px;z-index:2}
+.copy-tick svg{width:100%;height:50px;fill:rgba(40, 167, 69, 1);}
+.error{background:#ffe5e7;border-left:4px solid #c53030;color:#742a2a;padding:15px;border-radius:8px;margin-bottom:20px;text-align:center}
+#totpContainer{margin-top:86px;display:grid;grid-template-columns:repeat(auto-fill, minmax(328px, 1fr));gap:15px}
+.list-totp > div {min-height:65px;}

@@ -1,0 +1,18 @@
+/* Guard — shared edit-state badge and unsaved-changes confirmation */
+.eg-badge{display:inline-block;padding:2px 8px;border-radius:4px;background:var(--accent2);color:#fff;font-size:10px;font-weight:600;margin-left:8px;vertical-align:middle}
+#egConfirmBg{position:fixed;inset:0;backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s;z-index:9999}
+#egConfirmBg.open{opacity:1;pointer-events:all}
+.eg-confirm{background:var(--surface);border:1px solid var(--accent2);border-radius:12px;padding:24px;width:min(400px,90vw);display:flex;flex-direction:column;gap:16px}
+.eg-confirm-msg{font-size:14px;color:var(--text-dim);line-height:1.5;text-align:center}
+.eg-confirm-actions{display:flex;gap:10px}
+.eg-confirm-actions button{flex:1;padding:10px;border-radius:8px;font-size:13px;cursor:pointer;border:none;transition:opacity .15s}
+.eg-cancel{background:var(--surface2);color:var(--text-dim);border:1px solid var(--border) !important}
+.eg-cancel:hover{opacity:.8}
+.eg-discard{background:var(--accent2);color:#fff}
+.eg-discard:hover{opacity:.85}
+
+/* Guard confirmation is itself a native top-layer dialog. */
+dialog#egConfirmBg{position:fixed;inset:0;margin:auto;padding:0;border:0;background:transparent;color:var(--text);width:min(400px,90vw);max-width:90vw;opacity:1;pointer-events:auto;display:none;transition:none}
+dialog#egConfirmBg[open]{display:block}
+dialog#egConfirmBg::backdrop{background:rgba(0,0,0,.55);backdrop-filter:blur(4px)}
+dialog#egConfirmBg .eg-confirm{box-sizing:border-box;width:100%}

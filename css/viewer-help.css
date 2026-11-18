@@ -1,0 +1,20 @@
+/* ---- 關於 ---- */
+#siteViewer .about-link{margin-top:18px;text-align:center}
+
+.viewer-help-content{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0}
+.viewer-help-search{display:flex;flex:none;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.viewer-help-search input{box-sizing:border-box;width:min(100%,340px);min-width:0;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text-dim);font:inherit}
+.viewer-help-result-count,.viewer-help-empty{color:var(--muted);font-size:12px}
+.viewer-about .global-about-toc-item[hidden],.viewer-help-section[hidden]{display:none}
+
+.viewer-help-section details{margin-block:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.viewer-help-section summary{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:9px 12px;border-radius:7px;cursor:pointer}
+.viewer-help-section summary::-webkit-details-marker{display:none}
+.viewer-help-section summary:hover{background:var(--surface2)}
+.viewer-help-section details[open] > summary{border-bottom:1px solid var(--border)}
+.viewer-help-details-action{display:inline-flex;align-items:center;gap:5px;margin-inline-start:auto;color:var(--accent);font-size:12px;white-space:nowrap}
+.viewer-help-details-action::before{content:'▸'}
+.viewer-help-section details[open] .viewer-help-details-action::before{content:'▾'}
+.viewer-help-section details:not([open]) .viewer-help-details-action > :last-child,
+.viewer-help-section details[open] .viewer-help-details-action > :first-child{display:none}
+.viewer-help-section details > :not(summary){margin-inline:12px}

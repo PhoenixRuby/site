@@ -1,0 +1,63 @@
+/* ── Modal overlay ── */ .nc-modal-bg{position:fixed;inset:0;backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s;z-index:200}
+.nc-modal-bg.open{opacity:1;pointer-events:all}
+.nc-modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;width:min(1000px, 95vw);max-height:90vh;overflow-y:auto;transform:translateY(20px) scale(.97);transition:transform .35s cubic-bezier(.22,1,.36,1);position:relative;display:flex;flex-direction:column;gap:18px;font-family:Consolas, 'Microsoft JhengHei', monospace;color:var(--text);box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#555 #1e1e1e}
+.nc-modal-bg.open .nc-modal{transform:translateY(0) scale(1)}
+/* ── Modal header ── */ .nc-modal-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.nc-modal-title{gap:10px}
+/* ── Prompt / empty state ── */ 
+.nc-prompt{text-align:center;padding:60px 20px;color:var(--text-dim);min-height:60vh;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:calc(100vh - 140px);}
+.nc-prompt-icon{margin-bottom:12px;color:var(--text-dim)}
+.nc-prompt-icon svg{width:48px;height:48px}
+.nc-prompt strong{color:var(--text)}
+/* ── Panels ── */ .nc-panel_body{display:flex;flex-direction:column;gap:18px;overflow-y:auto;box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#555 #1e1e1e}
+.nc-panel{background:var(--nc-panel-bg,var(--surface2));border:1px solid var(--border);border-radius:8px;padding:14px;display:none}
+.nc-panel-title{font-size:.95rem;font-weight:bold;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.nc-count{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:1px 7px;border-radius:5px;font-size:.75rem}
+/* ── Request list ── */ .nc-list{display:flex;flex-wrap:wrap;gap:8px;min-height:60px;max-height:240px;overflow-y:auto;background:var(--surface);padding:10px;border-radius:6px;margin-bottom:10px}
+.nc-item{background:var(--nc-item-bg,var(--surface2));padding:8px 11px;border-radius:6px;cursor:pointer;flex:1 1 200px;min-width:0;max-width:calc(25% - 6px);border-left:4px solid #0a0;font-size:13px;height:38px;display:flex;align-items:center;gap:7px;position:relative;overflow:hidden;box-sizing:border-box;transition:opacity .15s}
+.nc-item:hover{opacity:.8}
+@media (max-width:900px){.nc-item{max-width:calc(33.33% - 6px)}}
+@media (max-width:640px){.nc-item{max-width:calc(50% - 4px)}}
+@media (max-width:420px){.nc-item{max-width:100%}}
+.nc-item.ps-item{border-left-color:#00aaff}
+.nc-item-text{white-space:nowrap;overflow:hidden;text-overflow:clip;flex:1;min-width:0;font-size:12px;color:var(--text-dim)}
+.nc-item::after{content:'';position:absolute;right:0;top:0;width:40px;height:100%;background:linear-gradient(to right, transparent, var(--nc-item-bg,var(--surface2)) 80%);pointer-events:none}
+html[data-theme="light"] #ncContent{--nc-panel-bg:#fff;--nc-item-bg:#e0eee4}
+html[data-theme="light"] #ncContent .ps-item{--nc-item-bg:#dfeefb}
+@media(prefers-color-scheme:light){
+  html[data-theme="system"] #ncContent{--nc-panel-bg:#fff;--nc-item-bg:#e0eee4}
+  html[data-theme="system"] #ncContent .ps-item{--nc-item-bg:#dfeefb}
+}
+/* ── Method badges ── */ .nc-badge{display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;letter-spacing:.4px;padding:2px 5px;border-radius:3px;flex-shrink:0;min-width:34px;text-align:center}
+.nc-GET{background:#1a4a1a;color:#4caf50;border:1px solid #2d7a2d}
+.nc-POST{background:#1a3a4a;color:#42a5f5;border:1px solid #1565c0}
+html[data-theme="light"] .nc-badge:is(.nc-GET,.nc-POST){color:#fff;font-size:11px}
+@media(prefers-color-scheme:light){
+  html[data-theme="system"] .nc-badge:is(.nc-GET,.nc-POST){color:#fff;font-size:11px}
+}
+.nc-PUT{background:#3a2a00;color:#ffb300;border:1px solid #e65100}
+.nc-PATCH{background:#2a1a3a;color:#ce93d8;border:1px solid #6a1b9a}
+.nc-DELETE{background:#3a1a1a;color:#ef5350;border:1px solid #b71c1c}
+.nc-HEAD{background:#2a2a2a;color:#90a4ae;border:1px solid #546e7a}
+.nc-OPTS{background:#2a2a1a;color:#fff176;border:1px solid #f9a825}
+.nc-UNK{background:#2a2a2a;color:#888;border:1px solid #444}
+/* ── Panel actions ── */ .nc-panel-actions{display:flex;gap:8px;flex-wrap:wrap}
+.nc-btn{padding:7px 13px;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;font-family:inherit;transition:opacity .15s}
+.nc-btn:hover{opacity:.82}
+.nc-btn-copy{background:#0a7a0a;color:#fff}
+.nc-btn-clear{background:#a02020;color:#fff}
+/* ── Toast ── */ .nc-toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);color:#fff;padding:10px 20px;border-radius:6px;font-size:.85rem;box-shadow:0 4px 18px rgba(0,0,0,.6);display:none;align-items:center;gap:8px;border-left:4px solid transparent;white-space:nowrap;z-index:500;font-family:Consolas, monospace}
+.nc-toast.open{display:flex}
+.nc-toast.t-ps{background:#1a2e3d;border-left-color:#00aaff}
+.nc-toast.t-bash{background:#1a2e1a;border-left-color:#00cc44}
+.nc-toast.t-del{background:#3a1a1a;border-left-color:#ef5350}
+.nc-toast.t-info{background:#2a2a2a;border-left-color:#888}
+/* Help CSS moved to network-help.js */
+#ncAddText,#ncEditText { box-sizing:border-box; width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text-dim); font:13px Consolas,monospace; resize:vertical; }
+#ncAddError { margin:0; color:var(--danger); }
+
+.nc-confirm-panel.app-dialog-panel-medium { width:min(440px,calc(100vw - 32px)); }
+#ncConfirmText { margin:0; color:var(--text-dim); }
+#ncEditBg .app-dialog-footer { flex-wrap:wrap; }
+#ncEditBg #ncEditDelete { color:var(--danger); border-color:var(--danger); }
+#ncConfirmBg #ncConfirmOk { background:var(--danger); }

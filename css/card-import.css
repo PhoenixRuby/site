@@ -1,0 +1,39 @@
+.import-drop{border:2px dashed var(--border);border-radius:10px;padding:36px 20px;text-align:center;cursor:pointer;color:var(--text-dim);font-size:.9rem;transition:border-color .2s, background .2s}
+.import-drop:hover,.import-drop.drag-over{border-color:var(--accent);background:rgba(0,229,255,.04);color:var(--text)}
+.import-analysis{display:none;flex-direction:column;gap:10px}
+.import-warn{background:rgba(229,57,53,.08);border:1px solid var(--danger);border-radius:8px;padding:12px;font-size:12px;color:var(--text-dim);line-height:1.6}
+.import-warn strong{color:var(--danger)}
+.import-warn code{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;color:var(--accent)}
+.import-card-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr));gap:6px;max-height:60vh;overflow-y:auto;padding-right:4px}
+.import-card-list::-webkit-scrollbar{width:4px}
+.import-card-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.import-card-item{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:flex-start;gap:10px;font-size:13px}
+.import-card-dup-id{border-color:#e040fb}
+.import-card-dup-id .import-dup-label{color:#e040fb}
+.import-card-dup-both{border-color:#ff5252}
+.import-card-dup-both .import-dup-label{color:#ff5252}
+#cardImportDropOverlay{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .2s}
+#cardImportDropOverlay.active{opacity:1;pointer-events:all}
+.card-drop-overlay-inner{border:3px dashed var(--accent);border-radius:16px;padding:48px 64px;color:var(--accent);font-size:1.4rem;font-weight:600;background:rgba(0,0,0,.6);pointer-events:none;text-align:center}
+.import-card-item img{width:24px;height:24px;border-radius:4px;object-fit:contain}
+.import-card-item .import-card-info{flex:1;min-width:0}
+.import-card-item .import-card-title{font-weight:500}
+.import-card-item .import-card-type{font-size:10px;color:var(--text-dim);font-family:'IBM Plex Mono',monospace}
+.import-card-item .import-card-mark{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:2px}
+.import-card-item .import-card-mark .sort-icon,.import-card-item .import-card-mark .sort-type{font-size:9px}
+.import-card-modules{display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap}
+.import-card-modules code{font-size:9px;padding:2px 5px;border-radius:4px;background:rgba(108,63,224,.12);color:var(--accent2);border:1px solid rgba(108,63,224,.25);font-family:'IBM Plex Mono',monospace}
+.import-card-new{border-color:var(--success)}
+.import-card-new.import-card-skipped{border-color:var(--border)}
+.import-card-new .import-new-label{font-size:10px;color:var(--success);font-weight:600}
+.import-card-new.import-card-skipped .import-new-label{color:var(--text-dim)}
+.import-card-dup{border-color:#ff9800}
+.import-card-dup.dup-overwrite-card{border-color:var(--accent)}
+.import-card-dup .import-dup-label{font-size:10px;color:#ff9800;font-weight:600}
+.import-card-dup.dup-overwrite-card .import-dup-label{color:var(--accent)}
+.import-action{display:flex;gap:6px;flex-shrink:0}
+.import-action button{padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text-dim);transition:background .15s}
+.import-action button.active-add{border-color:var(--success);color:var(--success);background:rgba(0,168,84,.1)}
+.import-action button.active{border-color:var(--accent);color:var(--accent);background:rgba(81,203,238,.1)}
+.import-action button.active-skip{border-color:#ff9800;color:#ff9800;background:rgba(255,152,0,.1)}
+.import-actions .btn-confirm{flex:1}
