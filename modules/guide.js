@@ -105,23 +105,23 @@ const Guide = {
     function makeProfile(doc,label){return {id:uid(),label:label||'預設設定',document:doc};}
     function loadGuide(id){
       try{
-        const saved=JSON.parse(localStorage.getItem(KEY(id)));
+        const saved=JSON.parse(AccountStorage.getItem(KEY(id)));
         if(saved?.profiles?.length){
           const profiles=saved.profiles.filter(p=>p&&p.document&&Array.isArray(p.document.chapters));
           if(profiles.length)return {version:3,profiles,selectedId:profiles.some(p=>p.id===saved.selectedId)?saved.selectedId:profiles[0].id};
         }
       }catch(e){console.warn('Guide 資料讀取失敗',e);}
       if(id==='wsl'){
-        try{const old=JSON.parse(localStorage.getItem('wsl_runbook_v2'));
+        try{const old=JSON.parse(AccountStorage.getItem('wsl_runbook_v2'));
           if(old&&Array.isArray(old.chapters))return {version:3,profiles:[makeProfile(old,'預設設定')],selectedId:null};
         }catch(e){console.warn(e);}
-        try{const old=JSON.parse(localStorage.getItem('wsl_profiles_v1'));
+        try{const old=JSON.parse(AccountStorage.getItem('wsl_profiles_v1'));
           if(old?.profiles?.length){const profiles=old.profiles.map(p=>makeProfile(migrate(p.sections,p.label),p.label));return {version:3,profiles,selectedId:profiles[0].id};}
         }catch(e){console.warn(e);}
         return {version:3,profiles:[makeProfile(migrate(DEFAULT,'WSL 操作手冊'),'預設設定')],selectedId:null};
       }
       if(id==='cicd'){
-        try{const old=JSON.parse(localStorage.getItem('cicd_profiles_v1'));
+        try{const old=JSON.parse(AccountStorage.getItem('cicd_profiles_v1'));
           if(old?.profiles?.length){const profiles=old.profiles.map(p=>({id:p.id||uid(),label:p.label||'未命名設定',document:migrate(p.sections,p.label||'CI/CD 操作手冊')}));
             return {version:3,profiles,selectedId:profiles.some(p=>p.id===old.selectedId)?old.selectedId:profiles[0].id};}
         }catch(e){console.warn(e);}
@@ -164,7 +164,7 @@ const Guide = {
     overlay.addEventListener('drop',()=>setTimeout(updateDirtyBadge,0));
     const el=(tag,cls,text)=>{const x=document.createElement(tag);if(cls)x.className=cls;if(text!==undefined)x.textContent=text;return x;};
     function btn(text,fn,cls=''){const b=el('button',cls,text);b.type='button';b.addEventListener('click',fn);return b;}
-    function persist(){try{selectedProfile().document=data;localStorage.setItem(KEY(currentGuide),JSON.stringify(store));return true}catch(e){alert('儲存失敗：'+e.message);return false}}
+    function persist(){try{selectedProfile().document=data;AccountStorage.setItem(KEY(currentGuide),JSON.stringify(store));return true}catch(e){alert('儲存失敗：'+e.message);return false}}
     function anchor(id){return read.querySelector('[data-anchor="'+CSS.escape(id)+'"]')}
     function scrollToId(id){
       const target=anchor(id);if(!target)return;

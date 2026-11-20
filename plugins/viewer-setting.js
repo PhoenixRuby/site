@@ -2,20 +2,31 @@
 (() => {
   'use strict';
   const KEY = 'site-viewer-thumbnail-settings';
-  const defaults = Object.freeze({ imageThumbnails: true, videoThumbnails: false, thumbnailGap: 12, thumbnailSize: 88, autoOpen: true });
+  const defaults = Object.freeze({ imageThumbnails: true, videoThumbnails: false, thumbnailGap: 12, thumbnailSize: 88, autoOpen: true, diffSyntaxHighlight: true, ...viewerDiffDefaults });
+  const diffLimitFields = {
+    diffHighlightMaxLines: ['語法高亮行數上限', '新舊兩版合計的行數。'],
+    diffHighlightMaxChars: ['語法高亮字元數上限', '每版各自計算，換行統一後計數。'],
+    diffMaxLines: ['逐行比對行數上限', '新舊兩版合計的行數。'],
+    diffMaxCells: ['逐行比對計算上限', '移除相同的開頭與結尾後，剩餘舊版行數乘以剩餘新版行數。']
+  };
+  const diffLimitKeys = Object.keys(diffLimitFields);
   const read = () => {
     try {
-      const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
+      const saved = JSON.parse(AccountStorage.getItem(KEY) || '{}');
       return { autoOpen: typeof saved.autoOpen === 'boolean'
           ? saved.autoOpen
-          : localStorage.getItem('site-viewer-auto-open') !== 'false',
+          : AccountStorage.getItem('site-viewer-auto-open') !== 'false',
+        diffSyntaxHighlight: saved.diffSyntaxHighlight !== false,
+        ...Object.fromEntries(diffLimitKeys.map(key => [
+          key, Number.isSafeInteger(saved[key]) && saved[key] > 0 ? saved[key] : defaults[key]
+        ])),
         imageThumbnails: saved.imageThumbnails !== false, videoThumbnails: saved.videoThumbnails === true, thumbnailGap: Number.isFinite(Number(saved.thumbnailGap)) ? Math.max(4, Math.min(40, Number(saved.thumbnailGap))) : 12,
         thumbnailSize: Number.isFinite(Number(saved.thumbnailSize)) && Number(saved.thumbnailSize) >= 80
           ? Math.max(80, Math.min(200, Number(saved.thumbnailSize)))
-          : Math.max(80, Math.min(200, Number(localStorage.getItem('site-viewer-explorer-size')) || 88)) };
+          : Math.max(80, Math.min(200, Number(AccountStorage.getItem('site-viewer-explorer-size')) || 88)) };
     } catch { return { ...defaults }; }
   };
-  const write = value => { localStorage.setItem(KEY, JSON.stringify(value)); };
+  const write = value => { AccountStorage.setItem(KEY, JSON.stringify(value)); };
   window.viewerSetting = { get: read };
 
   registerPlugin('viewer-setting', {
@@ -68,6 +79,20 @@
               <div class="viewer-setting-page" data-setting-panel="data">
                 <h2 id="viewer-setting-data-title">資料設定</h2>
                 <div class="viewer-setting-option">
+                  <label><input type="checkbox" name="diffSyntaxHighlight" checked><span class="viewer-setting-option-text"><strong>文字版本比對的語法高亮</strong><small>適用於支援的格式。超過下方高亮上限時，仍會顯示可計算的差異。</small></span></label>
+                </div>
+                ${diffLimitKeys.map(key => {
+                  const [label, description] = diffLimitFields[key];
+                  return `<div class="viewer-setting-option">
+                    <label><span class="viewer-setting-option-text"><strong>${label}</strong><small>${description}</small></span>
+                      <input type="number" name="${key}" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required>
+                    </label>
+                  </div>`;
+                }).join('')}
+                <div class="viewer-setting-option viewer-setting-spacing-control">
+                  <button type="button" class="viewer-setting-reset" data-reset-diff-limits>↺ 恢復比對上限預設值</button>
+                </div>
+                <div class="viewer-setting-option">
                   <label><input type="checkbox" name="autoOpen" checked><span class="viewer-setting-option-text"><strong>重新整理時還原上次的資料夾</strong><small>需要授權時會先提示。</small></span></label>
                 </div>
               </div>
@@ -105,7 +130,7 @@
         });
       }
       settingsContent.addEventListener('scroll', syncNavigation, { passive: true });
-      const controls = Object.fromEntries(['autoOpen', 'imageThumbnails', 'videoThumbnails'].map(k => [k, dialog.querySelector('[name="' + k + '"]')]));
+      const controls = Object.fromEntries(['autoOpen', 'imageThumbnails', 'videoThumbnails', 'diffSyntaxHighlight', ...diffLimitKeys].map(k => [k, dialog.querySelector('[name="' + k + '"]')]));
       this.controls = controls;
       const gapInput = dialog.querySelector('[name="thumbnailGap"]');
       const gapOutput = gapInput.nextElementSibling;
@@ -121,6 +146,8 @@
 
       const currentValue = () => ({
         autoOpen: controls.autoOpen.checked,
+        diffSyntaxHighlight: controls.diffSyntaxHighlight.checked,
+        ...Object.fromEntries(diffLimitKeys.map(key => [key, controls[key].valueAsNumber])),
         imageThumbnails: controls.imageThumbnails.checked,
         videoThumbnails: controls.videoThumbnails.checked,
         thumbnailGap: Number(gapInput.value),
@@ -139,6 +166,8 @@
       const refresh = () => {
         baseline = read();
         controls.autoOpen.checked = baseline.autoOpen;
+        controls.diffSyntaxHighlight.checked = baseline.diffSyntaxHighlight;
+        for (const key of diffLimitKeys) controls[key].value = baseline[key];
         controls.imageThumbnails.checked = baseline.imageThumbnails;
         controls.videoThumbnails.checked = baseline.videoThumbnails;
         sizeInput.value = String(baseline.thumbnailSize);
@@ -165,6 +194,11 @@
           syncEdited();
         });
       });
+      dialog.querySelector('[data-reset-diff-limits]').addEventListener('click', () => {
+        for (const key of diffLimitKeys) controls[key].value = defaults[key];
+        syncEdited();
+      });
+      for (const key of diffLimitKeys) controls[key].addEventListener('input', syncEdited);
       dialog.addEventListener('change', event => {
         if (event.target.matches('input[type="checkbox"], input[type="range"]')) syncEdited();
       });
@@ -183,6 +217,9 @@
       });
       dialog.querySelector('form').addEventListener('submit', event => event.preventDefault());
       apply.addEventListener('click', () => {
+        for (const key of diffLimitKeys) {
+          if (!controls[key].reportValidity()) return;
+        }
         const value = currentValue();
         try {
           write(value);

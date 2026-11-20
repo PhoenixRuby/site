@@ -167,7 +167,9 @@ registerPlugin('bookmark-editor', {
     else if (this.dirty && !confirm('放棄尚未儲存的修改？')) return;
     else done();
   },
-  save() {
+  async save() {
+    const submit = this.$('bmWizardNext');
+    if (submit.disabled) return;
     if (!this.updateThemeWarning(true)) {
       this.showStep(1);
       this.updateThemeWarning(true);
@@ -181,7 +183,15 @@ registerPlugin('bookmark-editor', {
     const notionUrl = this.type === 'note' ? this.$('bmEditNotionUrl').value.trim() : '';
     const notionId = window.bmExtractNotionId?.(notionUrl) || undefined;
     if (content) content = window.bmReplaceNotionLinks?.(content, notionId) || content;
-    window.plugins['bookmark-data'].save({ id: this.id, title, url, content, thumbnail: this.thumbnail, themeIds: this.checkedThemes(), notionUrl: notionUrl || undefined, notionId, codeLang: this.type === 'note' ? this.$('bmEditCodeLang').value : undefined, newThemes: this.pendingThemes });
+    submit.disabled = true;
+    try {
+      await window.plugins['bookmark-data'].save({ id: this.id, title, url, content, thumbnail: this.thumbnail, themeIds: this.checkedThemes(), notionUrl: notionUrl || undefined, notionId, codeLang: this.type === 'note' ? this.$('bmEditCodeLang').value : undefined, newThemes: this.pendingThemes });
+    } catch (error) {
+      this.toast('書籤未儲存：' + error.message);
+      return;
+    } finally {
+      submit.disabled = false;
+    }
     this.dirty = false; this.root.close(); this.toast(this.id ? '書籤已更新' : '書籤已新增');
   }
 });

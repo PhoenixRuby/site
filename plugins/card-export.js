@@ -179,11 +179,11 @@ registerPlugin('card-export', {
       const guides = {};
       if (includeGuide) {
         try {
-          for (let n = 0; n < localStorage.length; n++) {
-            const key = localStorage.key(n);
+          for (let n = 0; n < AccountStorage.length; n++) {
+            const key = AccountStorage.key(n);
             const match = /^guide_([a-z][a-z0-9_-]{0,63})_v1$/i.exec(key || '');
             if (!match) continue;
-            const saved = JSON.parse(localStorage.getItem(key));
+            const saved = JSON.parse(AccountStorage.getItem(key));
             if (!saved || !Array.isArray(saved.profiles) || !saved.profiles.length ||
                 !saved.profiles.every(profile => profile && typeof profile.id === 'string' &&
                   typeof profile.label === 'string' && profile.document && Array.isArray(profile.document.chapters))) {
@@ -215,7 +215,7 @@ registerPlugin('card-export', {
       if (includeChat) {
         let chatProfiles = null;
         try {
-          const raw = localStorage.getItem('chat_full_profiles_v1');
+          const raw = AccountStorage.getItem('chat_full_profiles_v1');
           if (raw) {
             const parsed = JSON.parse(raw);
             if (parsed && Array.isArray(parsed.profiles)) chatProfiles = { ...parsed, profiles: parsed.profiles.map(p => ({ ...p, timestamp: '' })) };

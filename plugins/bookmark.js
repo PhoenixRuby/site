@@ -22,6 +22,12 @@ registerPlugin('bookmark', {
 	return this.loadData()?.favorites?.length ?? 0;
     //return this.loadData(key).length;
   },
+  guestReview: {
+    label: '比對本機書籤設定',
+    keys: /^bookmark(Theme|TabPos|TabOverflow|_recent_notes)$/,
+    groups: ['書籤']
+  },
+  getGuestCount() { return window.plugins['bookmark-guest']?.count ?? 0; },
   load() {
 	const subCssList = ['setting', 'bookmark', 'bookmark-export', 'bookmark-import', 'bookmark-search', 'bookmark-searchcontent', 'bookmark-setting', 'bookmark-editor'];
 	const subPlugins = ['bookmark-export', 'bookmark-import', 'bookmark-search', 'bookmark-searchcontent','bookmark-sort', 'bookmark-setting', 'bookmark-data', 'bookmark-editor', 'bookmark-add', 'bookmark-help'];
@@ -37,7 +43,7 @@ registerPlugin('bookmark', {
     );
 
     // 3. 當所有樣式與腳本皆載入完成後，啟動初始化流程
-    return Promise.all([cssPromise, pluginsPromise]).then(() => {
+    return Promise.all([cssPromise, pluginsPromise, loadPluginCss('bookmark-guest'), loadPluginCss('guest-upload'), loadPluginScript('bookmark-guest')]).then(() => {
       
       // 4. 遍歷並自動執行各個子插件的生命週期 load 函式
       subPlugins.forEach(name => {
@@ -48,7 +54,8 @@ registerPlugin('bookmark', {
       });
 
       // 5. 觸發核心內容載入
-      this.init(); 
+      this.init();
+      window.plugins['bookmark-guest'].load();
     });
   },
   
@@ -302,6 +309,7 @@ registerPlugin('bookmark', {
     var _animateEntry = false;
     var _prevFavIds = new Set();
     function renderBookmarks() {
+      window.plugins['bookmark-guest']?.refresh?.();
       loadBmData();
       if (typeof renderToolbar === 'function') renderToolbar();
       if (currentThemeId !== 'all' && !bmData.themes.find(function(t) { return t.id === currentThemeId; })) {
@@ -854,14 +862,14 @@ registerPlugin('bookmark', {
       });
     }
 
-    function renderAndHighlight(container, content, codeLang) {
+    function renderAndHighlight(container, content, codeLang, context) {
       var effectiveLang = codeLang;
-      if (effectiveLang === 'auto') effectiveLang = detectLangFromTitle(currentReaderTitle) || detectLangFromContent(content);
+      if (effectiveLang === 'auto') effectiveLang = detectLangFromTitle(context ? context.title : currentReaderTitle) || detectLangFromContent(content);
 
-      var isMarkdown = (effectiveLang === 'markdown' || effectiveLang === 'auto');
+      var isMarkdown = !context?.source && (effectiveLang === 'markdown' || effectiveLang === 'auto');
 
       if (isMarkdown) {
-        var rendered = replaceNotionLinks(content, currentReaderNotionId);
+        var rendered = replaceNotionLinks(content, context ? context.notionId : currentReaderNotionId);
         if (renderMarkdown) {
           container.replaceChildren(renderMarkdown(rendered, { headingId: slugify, allowMedia: true }));
         } else {
@@ -2427,10 +2435,11 @@ blockquote { margin-inline-start: 0; padding-inline-start: 1rem; border-inline-s
     window.bmGetThemeName = getThemeName;
     window.bmReplaceNotionLinks = replaceNotionLinks;
     window.bmExtractNotionId = extractNotionId;
-    window.bmRenderContent = function(container, content, onDone) {
+    window.bmRenderContent = function(container, content, onDone, options) {
       prepareMarkdown(function() {
         loadHljs(function() {
-          renderAndHighlight(container, content, 'auto');
+          if (options?.isCurrent && !options.isCurrent()) return;
+          renderAndHighlight(container, content, options?.codeLang || 'auto', options);
           if (typeof onDone === 'function') onDone();
         });
       });

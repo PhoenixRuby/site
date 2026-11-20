@@ -345,7 +345,7 @@ function showToast(msg) {
 /* =============================================
    Plugin Loading
    ============================================= */
-const KNOWN_PLUGINS = ['about', 'setting', 'qr', 'card', 'bookmark', 'network', 'img', 'viewer'];
+const KNOWN_PLUGINS = ['about', 'setting', 'qr', 'card', 'bookmark', 'network', 'img', 'viewer', 'google-drive'];
 
 // Shared core modules must finish loading before plugins initialize.
 // Cache the Promise so repeated calls wait for the same loading operation.
@@ -396,10 +396,13 @@ function loadCoreScript(name) {
 }
 
 async function initPlugins() {
-  await Promise.all(KNOWN_PLUGINS.map(name => loadPluginScript(name)));
+  await loadPluginScript('google-drive');
+  await window.plugins['google-drive']?.load();
+  await Promise.all(KNOWN_PLUGINS.filter(name => name !== 'google-drive').map(name => loadPluginScript(name)));
   // 2. 改用 for...of 迴圈，這樣才能在內部使用 await
   const plugins = Object.values(window.plugins);
   for (const p of plugins) {
+    if (p === window.plugins['google-drive']) continue;
     if (typeof p.load === 'function') {
       // ✨ 關鍵：如果插件的 load 返回的是 Promise，就等待它完全做好再換下一個
       await p.load(); 
@@ -480,7 +483,11 @@ function applyToolbarBodyClass() {
   if (tbLabels) document.body.classList.add('tb-labels');
 }
 
+let toolbarBadgeStates = new Map();
+
 function renderToolbar() {
+  const previousBadges = toolbarBadgeStates;
+  toolbarBadgeStates = new Map();
   closeToolbarSubmenu();
   const old = document.getElementById('toolbar');
   if (old) old.remove();
@@ -519,14 +526,6 @@ function renderToolbar() {
     toolbar.appendChild(btn);
     return btn;
   }
-
-  if (tbAlign === 'center') {
-    var spacerBefore = document.createElement('div');
-    spacerBefore.className = 'tb-spacer tb-spacer-clean';
-    toolbar.appendChild(spacerBefore);
-  }
-
-  addBtn('mainmenu', '選單', function() { toggleMainMenu(toolbar); });
 
   //function modeDataCount() {
   //  try {
@@ -619,31 +618,54 @@ function renderToolbar() {
                 if (rawCount == null || rawCount === '' ||
                     !Number.isFinite(count) || count <= 0) return;
 
-                const badge = document.createElement('span');
+                const total = Math.trunc(count);
+                const key = JSON.stringify([viewMode, name]);
+                const maxDisplay = p.maxDisplay ?? null;
+                const previous = previousBadges.get(key);
+                if (previous && previous.maxDisplay !== maxDisplay) previous.animation?.reset();
+                const state = previous?.maxDisplay === maxDisplay
+                    ? previous : { badge: document.createElement('span'), maxDisplay };
+                const { badge } = state;
                 badge.className = 'tb-count';
                 badge.setAttribute('aria-hidden', 'true');
-                //badge.textContent = String(Math.trunc(count));
                 btn.appendChild(badge);
-                btn.setAttribute('aria-label', `${p.label || name}：${Math.trunc(count)}`);
+                btn.setAttribute('aria-label', `${p.label || name}：${total}`);
+                toolbarBadgeStates.set(key, state);
+                previousBadges.delete(key);
 
-
-				
-	
-                if (typeof window.CountUp === 'function') {
-                    const animation = new window.CountUp(badge, 0, Math.trunc(count), 0, 2.5, {
-                        useEasing: true,
-                        useGrouping: true,
-                        separator: ',',
-						delay: p.delay ?? 0,
-                        maxDisplay: p.maxDisplay ?? null
-                    });
-                    animation.start();
+                if (state.total !== total) {
+                    if (state.animation && state.animation.frameVal !== total) {
+                        state.animation.update(total);
+                    } else if (!state.animation && state.total === undefined && typeof window.CountUp === 'function') {
+                        state.animation = new window.CountUp(badge, 0, total, 0, 2.5, {
+                            useEasing: true,
+                            useGrouping: true,
+                            separator: ',',
+                            delay: p.delay ?? 0,
+                            maxDisplay
+                        });
+                        state.animation.start();
+                    } else {
+                        state.animation?.reset();
+                        state.animation = undefined;
+                        badge.textContent = maxDisplay != null && maxDisplay !== '' && total > Number(maxDisplay)
+                            ? Number(maxDisplay).toLocaleString('en-US') + '+'
+                            : total.toLocaleString('en-US');
+                    }
+                    state.total = total;
                 }
 			});
 	}
 
 	// 上方插件
 	renderPluginButtons('top');
+
+	if (tbAlign === 'center') {
+		const spacerBefore = document.createElement('div');
+		spacerBefore.className = 'tb-spacer tb-spacer-clean';
+		toolbar.appendChild(spacerBefore);
+	}
+	addBtn('mainmenu', '選單', function() { toggleMainMenu(toolbar); });
 
 	// 中間插件
 	renderPluginButtons('middle');
@@ -662,6 +684,7 @@ function renderToolbar() {
 	// 底部插件
 	renderPluginButtons('bottom');
 
+  for (const state of previousBadges.values()) state.animation?.reset();
 	document.body.appendChild(toolbar);
 }
 
@@ -675,8 +698,9 @@ function closeToolbarSubmenu() {
   const state = toolbarSubmenu;
   toolbarSubmenu = null;
   state.cleanup();
+  if (state.parentBadge) state.button.appendChild(state.parentBadge);
   state.menu.remove();
-  state.button.classList.remove('tb-submenu-active');
+  state.button.classList.remove('tb-submenu-active', 'tb-submenu-count-open');
   state.button.setAttribute('aria-expanded', 'false');
 }
 function toggleToolbarSubmenu(button, children) {
@@ -694,13 +718,13 @@ function toggleToolbarSubmenu(button, children) {
     menu.style.alignItems = 'center';
   }
   const actions = [];
+  let parentBadge;
   children.forEach(item => {
     if (!item || item.hidden === true || (typeof item.hidden === 'function' && item.hidden())) return;
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'tb-submenu-item';
     action.setAttribute('role', 'menuitem');
-    action.setAttribute('aria-label', item.label || '');
     //action.title = item.label || '';
 	const getLabel = () =>
 		typeof item.label === 'function'
@@ -708,6 +732,7 @@ function toggleToolbarSubmenu(button, children) {
 			: item.label || '';
 
 	action.dataset.tooltip = getLabel();
+    action.setAttribute('aria-label', getLabel());
 
 	action.addEventListener('mouseenter', () => {
 		action.dataset.tooltip = getLabel();
@@ -729,8 +754,27 @@ function toggleToolbarSubmenu(button, children) {
     }
     if (tbLabels) {
       const label = document.createElement('span');
-      label.textContent = item.label || '';
+      label.textContent = getLabel();
       action.appendChild(label);
+    }
+    const badgeToMove = item.receivesParentCount && !parentBadge
+      ? button.querySelector('.tb-count') : null;
+    const count = Math.trunc(Number(item.showCount?.()));
+    if (badgeToMove) {
+      parentBadge = badgeToMove;
+      action.appendChild(parentBadge);
+      menu.classList.add('has-count');
+      if (Number.isFinite(count) && count > 0) {
+        action.setAttribute('aria-label', getLabel() + '，' + count + ' 項待處理');
+      }
+    } else if (Number.isFinite(count) && count > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'tb-count';
+      badge.setAttribute('aria-hidden', 'true');
+      badge.textContent = String(count);
+      action.appendChild(badge);
+      action.setAttribute('aria-label', getLabel() + '，' + count + ' 項待處理');
+      menu.classList.add('has-count');
     }
     action.disabled = typeof item.disabled === 'function' ? !!item.disabled() : !!item.disabled;
     action.addEventListener('click', () => {
@@ -742,6 +786,7 @@ function toggleToolbarSubmenu(button, children) {
   });
   if (!actions.length) return;
   document.body.appendChild(menu); // avoid toolbar overflow clipping
+  button.classList.toggle('tb-submenu-count-open', menu.classList.contains('has-count'));
   button.classList.add('tb-submenu-active');
   button.setAttribute('aria-haspopup', 'menu');
   button.setAttribute('aria-expanded', 'true');
@@ -777,7 +822,7 @@ function toggleToolbarSubmenu(button, children) {
     window.removeEventListener('resize', position);
     window.removeEventListener('scroll', onScroll, true);
   };
-  toolbarSubmenu = {menu,button,cleanup};
+  toolbarSubmenu = {menu,button,cleanup,parentBadge};
   position();
   document.addEventListener('pointerdown', outside, true);
   document.addEventListener('keydown', keydown, true);
@@ -1045,6 +1090,7 @@ loadCoreScript('guard').then(function() {
   renderToolbar();
   window.niceScroll = new NiceScroll('html');
   switchMode(viewMode);
+  window.dispatchEvent(new Event('site-data-ready'));
 }).catch(function(error) {
   console.error('主程式初始化失敗：', error);
 });
@@ -1220,7 +1266,7 @@ const AppStorage = {
     const validKey = this._getValidKey(keylist, key);
     if (!validKey) return null; // 💡 改為回傳 null，方便上層判斷並給予自訂物件預設值
     try {
-      const raw = localStorage.getItem(validKey);
+      const raw = AccountStorage.getItem(validKey);
       if (!raw) return null;
       
       // 💡 嘗試解析 JSON，如果不是陣列也不是物件（例如純字串），會進入 catch 處理
@@ -1228,7 +1274,7 @@ const AppStorage = {
       return d; 
     } catch (_) { 
       // 💡 如果是純字串（如 'top', 'scroll'），JSON.parse 會失敗，這裡直接回傳原始字串
-      return localStorage.getItem(validKey); 
+      return AccountStorage.getItem(validKey);
     }
   },
 
@@ -1238,8 +1284,7 @@ const AppStorage = {
     try {
       // 💡 如果要存的是字串，就直接存；是物件或陣列才轉成 JSON 字串
       const valueToSave = (typeof arr === 'string') ? arr : JSON.stringify(arr);
-	  console.log(validKey, valueToSave);
-      localStorage.setItem(validKey, valueToSave);
+      AccountStorage.setItem(validKey, valueToSave);
     } catch (e) {
       console.error(`儲存 ${validKey} 失敗:`, e);
     }

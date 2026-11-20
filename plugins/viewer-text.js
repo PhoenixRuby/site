@@ -144,8 +144,8 @@ const viewerText = (() => {
     diff: 'diff', patch: 'diff', makefile: 'makefile', gnumakefile: 'makefile', mk: 'makefile',
   }));
 
-  async function highlight(name, text) {
-    if (text.length > 200000) return null;
+  async function highlight(name, text, maxChars = 200000) {
+    if (text.length > maxChars) return null;
     const filename = name.toLowerCase();
     const dockerfile = /^(?:dockerfile|containerfile)(?:\.|$)|\.(?:dockerfile|containerfile)$/.test(filename);
     const language = dockerfile ? 'dockerfile' :

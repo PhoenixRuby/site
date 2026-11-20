@@ -299,7 +299,7 @@ registerPlugin('card-import', {
       if (!importPendingData) return;
       const restoreGuides = pendingGuides && document.getElementById('importGuideChk').checked;
       const guideIds = restoreGuides ? Object.keys(pendingGuides) : [];
-      const conflicts = guideIds.filter(id => localStorage.getItem('guide_' + id + '_v1') !== null);
+      const conflicts = guideIds.filter(id => AccountStorage.getItem('guide_' + id + '_v1') !== null);
       if (conflicts.length && !overwriteGuides) {
         confirmAction({ message: '下列 Guide 已有資料，匯入將整份覆蓋所有設定組：\n' + conflicts.join('、') + '\n\n確定繼續？', confirmText: '覆蓋並匯入' }, () => confirmImport(true));
         return;
@@ -309,11 +309,11 @@ registerPlugin('card-import', {
       if (restoreGuides) {
         const previous = new Map();
         try {
-          guideIds.forEach(id => previous.set(id,localStorage.getItem('guide_' + id + '_v1')));
-          guideIds.forEach(id => { localStorage.setItem('guide_' + id + '_v1',JSON.stringify(pendingGuides[id])); guideCount++; });
+          guideIds.forEach(id => previous.set(id,AccountStorage.getItem('guide_' + id + '_v1')));
+          guideIds.forEach(id => { AccountStorage.setItem('guide_' + id + '_v1',JSON.stringify(pendingGuides[id])); guideCount++; });
           window.dispatchEvent(new CustomEvent('guide-profiles-imported',{detail:{ids:guideIds}}));
         } catch (err) {
-          previous.forEach((raw,id) => { try { if (raw === null) localStorage.removeItem('guide_' + id + '_v1'); else localStorage.setItem('guide_' + id + '_v1',raw); } catch (_) {} });
+          previous.forEach((raw,id) => { try { if (raw === null) AccountStorage.removeItem('guide_' + id + '_v1'); else AccountStorage.setItem('guide_' + id + '_v1',raw); } catch (_) {} });
           showToast('Guide 還原失敗：' + err.message);
           return;
         }
@@ -359,7 +359,7 @@ registerPlugin('card-import', {
           for (let i = currentOrder.length + 1; i <= newLen; i++) {
             currentOrder.push(i);
           }
-          //localStorage.setItem(STORAGE_KEY, JSON.stringify(currentOrder));
+          //AccountStorage.setItem(STORAGE_KEY, JSON.stringify(currentOrder));
 		  main.saveData(currentOrder, 'card_order');
         }
         renderGrid();
@@ -373,18 +373,18 @@ registerPlugin('card-import', {
             const key = 'chat_full_profiles_v1';
             const legacyKey = 'chat_environment_profiles_v1';
             const defaults = {url:'https://localhost:44309/Login/AppLogin',clientid:'TEST',key:'',gid:'GID71171171171171',version:'5.64.0(0)',deviceType:'iOS',os_version:'18.1.1',timestamp:'',nonce:'',autoTimestamp:true};
-            const legacyDevice = (() => { try { return JSON.parse(localStorage.getItem('chat_device_config_v1')) || {}; } catch (_) { return {}; } })();
-            const legacyAuto = typeof pendingChat.autoTimestamp === 'boolean' ? pendingChat.autoTimestamp : localStorage.getItem('chat_auto_timestamp') !== 'false';
+            const legacyDevice = (() => { try { return JSON.parse(AccountStorage.getItem('chat_device_config_v1')) || {}; } catch (_) { return {}; } })();
+            const legacyAuto = typeof pendingChat.autoTimestamp === 'boolean' ? pendingChat.autoTimestamp : AccountStorage.getItem('chat_auto_timestamp') !== 'false';
             const isLegacy = pendingChat.backupFormat === 'card-backup-v2';
             const normalize = p => ({ ...defaults, ...(isLegacy ? legacyDevice : {}), ...p, timestamp:'', autoTimestamp:typeof p.autoTimestamp === 'boolean' ? p.autoTimestamp : legacyAuto, nonce:typeof p.nonce === 'string' ? p.nonce : '' });
             let existing = {profiles:[],selectedId:''};
             try {
-              const stored = JSON.parse(localStorage.getItem(key));
+              const stored = JSON.parse(AccountStorage.getItem(key));
               if (stored && Array.isArray(stored.profiles)) existing = stored;
             } catch (_) {}
             if (!existing.profiles.length) {
               try {
-                const stored = JSON.parse(localStorage.getItem(legacyKey));
+                const stored = JSON.parse(AccountStorage.getItem(legacyKey));
                 if (stored && Array.isArray(stored.profiles)) existing = {profiles:stored.profiles.map(p=>({...defaults,...legacyDevice,...p,timestamp:'',autoTimestamp:legacyAuto})),selectedId:stored.selectedId};
               } catch (_) {}
             }
@@ -409,7 +409,7 @@ registerPlugin('card-import', {
             }
             const selectedId = importedIdMap.get(incoming.selectedId) || existing.selectedId;
             const result = {profiles:merged,selectedId:merged.some(p=>p.id===selectedId)?selectedId:merged[0]?.id||''};
-            localStorage.setItem(key,JSON.stringify(result));
+            AccountStorage.setItem(key,JSON.stringify(result));
             window.dispatchEvent(new CustomEvent('chat-profiles-imported'));
           }
         } catch (e) { showToast('卡片已處理，但 Chat 設定匯入失敗：' + e.message); return; }

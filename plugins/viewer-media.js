@@ -31,13 +31,13 @@ const viewerMedia = (() => {
     const checker = document.createElement('input');
     checker.type = 'checkbox';
     checker.checked = (() => {
-      try { return localStorage.getItem('viewer-image-checkerboard') !== 'off'; }
+      try { return AccountStorage.getItem('viewer-image-checkerboard') !== 'off'; }
       catch (_) { return true; }
     })();
     checkerLabel.append(checker, document.createTextNode(' 顯示格線'));
     function updateChecker() {
       stage.classList.toggle('checkerboard', checker.checked);
-      try { localStorage.setItem('viewer-image-checkerboard', checker.checked ? 'on' : 'off'); }
+      try { AccountStorage.setItem('viewer-image-checkerboard', checker.checked ? 'on' : 'off'); }
       catch (_) { /* 瀏覽器禁止儲存時，仍可在當前圖片切換 */ }
     }
     checker.addEventListener('change', updateChecker);

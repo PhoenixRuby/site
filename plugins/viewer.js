@@ -50,8 +50,226 @@ function normalizeViewerRecents(records) {
   });
 }
 
+function viewerSameFile(a, b) {
+  return a.size === b.size && (a.hash && b.hash
+    ? a.hash === b.hash
+    : a.mtime == null || b.mtime == null || a.mtime === b.mtime);
+}
+
+function viewerSnapshotUpdatedAt(previous, files, directories, now) {
+  const baseline = previous.snapshot?.files ?? [];
+  const byPath = new Map(baseline.map(file => [file.path, file]));
+  const oldDirectories = new Set(previous.directories ?? []);
+  const changed = !previous.snapshot || files.length !== baseline.length ||
+    directories.size !== oldDirectories.size || [...directories].some(path => !oldDirectories.has(path)) ||
+    files.some(file => {
+      const old = byPath.get(file.path);
+      return !old || !viewerSameFile(old, file);
+    });
+  return changed ? now : previous.updatedAt ?? previous.savedAt ?? now;
+}
+
+function viewerReconnectBaseline(snapshot) {
+  const files = (snapshot.files ?? []).flatMap(({ path, size, mtime, hash, ch }) => {
+    if (ch?.k === 'new') return [];
+    return [{ path, size: ch?.so ?? size, mtime: ch ? ch.sm : mtime, hash: ch ? ch.sh : hash }];
+  });
+  for (const { path, size, mtime, hash } of snapshot.gone ?? []) files.push({ path, size, mtime, hash });
+  return files;
+}
+
+const viewerDiffDefaults = Object.freeze({
+  diffHighlightMaxLines: 24_000,
+  diffHighlightMaxChars: 500_000,
+  diffMaxLines: 48000,
+  diffMaxCells: 8_000_000
+});
+
+// 高亮整份原文以保留跨行語法，再將 token 分配到各行。
+function viewerDiffHighlightLines(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const lines = [document.createDocumentFragment()];
+
+  function appendText(node, tokens) {
+    const parts = node.textContent.split('\n');
+    parts.forEach((part, index) => {
+      if (index) lines.push(document.createDocumentFragment());
+      if (!part) return;
+      let target = lines.at(-1);
+      for (const token of tokens) {
+        const span = document.createElement('span');
+        span.className = token;
+        target.append(span);
+        target = span;
+      }
+      target.append(part);
+    });
+  }
+
+  function visit(node, tokens) {
+    if (node.nodeType === Node.TEXT_NODE) appendText(node, tokens);
+    else if (node.nodeType === Node.ELEMENT_NODE) {
+      const nested = node.className ? [...tokens, node.className] : tokens;
+      node.childNodes.forEach(child => visit(child, nested));
+    }
+  }
+
+  template.content.childNodes.forEach(node => visit(node, []));
+  return lines;
+}
+
+// 只配對同一個差異區塊內的一刪一增，保留多行區塊的原始對齊。
+function viewerMarkInlineDiff(diff, panes) {
+  const isChanged = ([left, right]) => left === null || right === null;
+  function mark(row, start, end) {
+    if (start >= end) return;
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    const segments = [];
+    let offset = 0;
+    for (let node = walker.nextNode(); node && offset < end; node = walker.nextNode()) {
+      const length = node.length;
+      if (offset + length > start) segments.push([node, Math.max(0, start - offset), Math.min(length, end - offset)]);
+      offset += length;
+    }
+    for (const [node, from, to] of segments) {
+      const range = document.createRange();
+      range.setStart(node, from);
+      range.setEnd(node, to);
+      const marker = document.createElement('mark');
+      marker.className = 'viewer-inline-change';
+      range.surroundContents(marker);
+    }
+  }
+
+  for (let start = 0; start < diff.length;) {
+    if (!isChanged(diff[start])) { start++; continue; }
+    let end = start + 1;
+    while (end < diff.length && isChanged(diff[end])) end++;
+    if (end - start === 2) {
+      const oldRow = diff[start][0] !== null ? start : start + 1;
+      const newRow = oldRow === start ? start + 1 : start;
+      const before = diff[oldRow][0];
+      const after = diff[newRow][1];
+      if (before !== null && after !== null && before.length <= 4096 && after.length <= 4096) {
+        const oldChars = Array.from(before);
+        const newChars = Array.from(after);
+        let left = 0;
+        let oldEnd = oldChars.length;
+        let newEnd = newChars.length;
+        while (left < oldEnd && left < newEnd && oldChars[left] === newChars[left]) left++;
+        while (oldEnd > left && newEnd > left && oldChars[oldEnd - 1] === newChars[newEnd - 1]) {
+          oldEnd--;
+          newEnd--;
+        }
+        const prefix = oldChars.slice(0, left).join('').length;
+        mark(panes[0].children[oldRow], prefix, before.length - oldChars.slice(oldEnd).join('').length);
+        mark(panes[1].children[newRow], prefix, after.length - newChars.slice(newEnd).join('').length);
+      }
+    }
+    start = end;
+  }
+}
+
+function viewerLineDiff(before, after, limits = viewerDiffDefaults) {
+  const oldLines = before.split(/\r\n|\n|\r/);
+  const newLines = after.split(/\r\n|\n|\r/);
+  if (oldLines.length + newLines.length > limits.diffMaxLines) return null;
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+  let oldEnd = oldLines.length, newEnd = newLines.length;
+  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+  const rows = oldLines.slice(0, start).map(line => [line, line]);
+  if ((oldEnd - start) * (newEnd - start) > limits.diffMaxCells) {
+    const anchors = viewerDiffAnchors(oldLines, newLines, start, oldEnd, newEnd);
+    if (!anchors.length) return null;
+    let oldStart = start, newStart = start;
+    let remaining = limits.diffMaxCells;
+    for (const [oldIndex, newIndex] of [...anchors, [oldEnd, newEnd]]) {
+      const cells = (oldIndex - oldStart) * (newIndex - newStart);
+      if (cells > remaining) return null;
+      remaining -= cells;
+      viewerAppendDiffRows(rows, oldLines, newLines, oldStart, newStart, oldIndex, newIndex);
+      if (oldIndex === oldEnd) break;
+      rows.push([oldLines[oldIndex], newLines[newIndex]]);
+      oldStart = oldIndex + 1;
+      newStart = newIndex + 1;
+    }
+  } else {
+    viewerAppendDiffRows(rows, oldLines, newLines, start, start, oldEnd, newEnd);
+  }
+  for (const line of oldLines.slice(oldEnd)) rows.push([line, line]);
+  return rows;
+}
+
+// 用只在兩版各出現一次的相同行切段，並保留順序一致的最長序列。
+function viewerDiffAnchors(oldLines, newLines, start, oldEnd, newEnd) {
+  function uniquePositions(lines, end) {
+    const positions = new Map();
+    for (let i = start; i < end; i++) {
+      positions.set(lines[i], positions.has(lines[i]) ? -1 : i);
+    }
+    return positions;
+  }
+  const oldPositions = uniquePositions(oldLines, oldEnd);
+  const newPositions = uniquePositions(newLines, newEnd);
+  const candidates = [];
+  for (const [line, oldIndex] of oldPositions) {
+    const newIndex = newPositions.get(line);
+    if (oldIndex >= 0 && newIndex >= 0) candidates.push([oldIndex, newIndex]);
+  }
+  const tails = [];
+  const previous = [];
+  candidates.forEach(([, newIndex], index) => {
+    let low = 0, high = tails.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (candidates[tails[mid]][1] < newIndex) low = mid + 1;
+      else high = mid;
+    }
+    previous[index] = low ? tails[low - 1] : -1;
+    tails[low] = index;
+  });
+  const anchors = [];
+  for (let index = tails.at(-1); index >= 0; index = previous[index]) {
+    anchors.push(candidates[index]);
+  }
+  return anchors.reverse();
+}
+
+function viewerAppendDiffRows(rows, oldLines, newLines, oldStart, newStart, oldEnd, newEnd) {
+  const height = oldEnd - oldStart, width = newEnd - newStart;
+  if (!height || !width) {
+    for (let i = oldStart; i < oldEnd; i++) rows.push([oldLines[i], null]);
+    for (let j = newStart; j < newEnd; j++) rows.push([null, newLines[j]]);
+    return;
+  }
+  const stride = width + 1;
+  const scores = new Uint32Array((height + 1) * stride);
+  for (let i = height - 1; i >= 0; i--) {
+    for (let j = width - 1; j >= 0; j--) {
+      const at = i * stride + j;
+      scores[at] = oldLines[oldStart + i] === newLines[newStart + j]
+        ? 1 + scores[at + stride + 1] : Math.max(scores[at + stride], scores[at + 1]);
+    }
+  }
+  let i = 0, j = 0;
+  while (i < height || j < width) {
+    if (i < height && j < width && oldLines[oldStart + i] === newLines[newStart + j]) {
+      rows.push([oldLines[oldStart + i++], newLines[newStart + j++]]);
+    } else if (i < height && (j === width || scores[(i + 1) * stride + j] >= scores[i * stride + j + 1])) {
+      rows.push([oldLines[oldStart + i++], null]);
+    } else {
+      rows.push([null, newLines[newStart + j++]]);
+    }
+  }
+}
+
 function viewerDiffIndex(prev, cur, now) {
-  const sameSig = (a, b) => a.size === b.size && (a.mtime == null || b.mtime == null || a.mtime === b.mtime);
+
   const pf = (Array.isArray(prev) ? prev : prev?.files || []).filter(file => !viewerIgnoresPath(file.path));
   const pg = (Array.isArray(prev) ? [] : prev?.gone || []).filter(file => !viewerIgnoresPath(file.path));
   const pm = new Map(pf.map(f => [f.path, f]));
@@ -64,13 +282,13 @@ function viewerDiffIndex(prev, cur, now) {
     let flag = null;
     if (!o) {
       const g = gm.get(c.path);
-      if (g) { if (!sameSig(g, c)) flag = { k: 'mod', at: now, so: g.size, sm: nn(g.mtime) }; }   // 刪掉又出現：和「刪除前看過的版本」比
+      if (g) { if (!viewerSameFile(g, c)) flag = { k: 'mod', at: now, so: g.size, sm: nn(g.mtime), sh: g.hash }; }   // 刪掉又出現：和「刪除前看過的版本」比
       else flag = { k: 'new', at: now };
     } else if (o.ch && o.ch.k === 'new') {
-      flag = { k: 'new', at: sameSig(o, c) ? o.ch.at : now };   // 還沒看過的新檔案：維持「新」；又被改了就算這次的變動
+      flag = { k: 'new', at: viewerSameFile(o, c) ? o.ch.at : now };   // 還沒看過的新檔案：維持「新」；又被改了就算這次的變動
     } else {
-      const sv = o.ch ? { size: o.ch.so, mtime: o.ch.sm } : o;   // 沒有 ch = 上次記下的版本就是看過的版本（舊資料也相容）
-      if (!sameSig(sv, c)) flag = { k: 'mod', at: o.ch && sameSig(o, c) ? o.ch.at : now, so: sv.size, sm: nn(sv.mtime) };
+      const sv = o.ch ? { size: o.ch.so, mtime: o.ch.sm, hash: o.ch.sh } : o;   // 沒有 ch = 上次記下的版本就是看過的版本（舊資料也相容）
+      if (!viewerSameFile(sv, c)) flag = { k: 'mod', at: o.ch && viewerSameFile(o, c) ? o.ch.at : now, so: sv.size, sm: nn(sv.mtime), sh: sv.hash };
     }
     if (flag) { chg[c.path] = flag; if (flag.k === 'new') counts.added++; else counts.modified++; }
   }
@@ -78,8 +296,8 @@ function viewerDiffIndex(prev, cur, now) {
   for (const o of pf) {
     if (seen.has(o.path)) continue;
     if (o.ch && o.ch.k === 'new') continue;   // 從沒看過的新檔案又被刪了：不用提
-    const sv = o.ch ? { size: o.ch.so, mtime: o.ch.sm } : o;
-    gone.push({ path: o.path, size: sv.size, mtime: nn(sv.mtime), at: now });
+    const sv = o.ch ? { size: o.ch.so, mtime: o.ch.sm, hash: o.ch.sh } : o;
+    gone.push({ path: o.path, size: sv.size, mtime: nn(sv.mtime), hash: sv.hash, at: now });
     counts.removed++;
   }
   for (const g of pg) if (!seen.has(g.path)) gone.push(g);
@@ -270,7 +488,7 @@ registerPlugin('viewer', {
             </div>
             <button class="btn viewer-change-return" type="button" hidden>← 返回目前檔案</button>
           </div>
-          <div class="viewer-tree"></div>
+          <div class="viewer-tree" tabindex="-1"></div>
           <div class="viewer-tree viewer-deleted-tree" hidden aria-label="已刪除檔案目錄"></div>
         </aside>
       </div>`;
@@ -338,6 +556,7 @@ registerPlugin('viewer', {
     }
 
     const preview = content.querySelector('.viewer-file-text');
+    let previewScroll;
     const fileInfo = content.querySelector('.viewer-file-info');
     const explorer = content.querySelector('.viewer-explorer');
     explorer.tabIndex = 0;
@@ -380,6 +599,7 @@ registerPlugin('viewer', {
     let explorerSelectedName = '';
     let explorerScrollTop = 0;
     let explorerObserver;
+    let explorerScroll;
     const explorerUrls = new Set();
     const explorerVideos = /\.(?:mp4|m4v|mov|webm|ogv|mkv|avi|wmv|mpeg|mpg|3gp)$/i;
     const getExplorerSettings = () => window.viewerSetting?.get?.() || { imageThumbnails: true, videoThumbnails: false };
@@ -388,6 +608,8 @@ registerPlugin('viewer', {
     const explorerImages = /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
 
     function releaseExplorerImages() {
+      explorerScroll?.destroy();
+      explorerScroll = undefined;
       explorerGeneration++;
       explorerObserver?.disconnect();
       explorerObserver = undefined;
@@ -420,6 +642,14 @@ registerPlugin('viewer', {
       for (let parent = (isFolder ? node.parentElement.parentElement : node).closest('details'); parent; parent = parent.parentElement.closest('details')) parent.open = true;
       node.scrollIntoView({block:'nearest'});
     }
+    function updateExplorerChangeBadge(item, entry) {
+      const badge = item.querySelector('.viewer-explorer-diff');
+      badge.hidden = entry?.change?.k !== 'mod';
+      const tile = item.querySelector('.viewer-explorer-tile');
+      if (badge.hidden) tile.removeAttribute('aria-label');
+      else tile.setAttribute('aria-label', entry.file.name + '（已修改）');
+    }
+
     function showExplorer(path = explorerFolder) {
       const folder = explorerFolders.get(path);
       if (!folder) return;
@@ -564,6 +794,25 @@ registerPlugin('viewer', {
         } else thumb.innerHTML = viewerFileSvg(name);
         const label = document.createElement('span'); label.className = 'viewer-explorer-name'; label.textContent = name;
         tile.append(thumb, label);
+        const item = document.createElement('div');
+        item.className = 'viewer-explorer-item';
+        item.append(tile);
+        if (!folderTile) {
+          const filePath = path ? path + '/' + name : name;
+          item.dataset.explorerFile = filePath;
+          const badge = document.createElement('button');
+          badge.type = 'button';
+          badge.className = 'viewer-explorer-diff';
+          badge.textContent = '改';
+          badge.title = '比對新舊文字';
+          badge.setAttribute('aria-label', '比對新舊文字：' + name);
+          badge.addEventListener('click', () => {
+            const entry = treeEntries.get(filePath);
+            if (entry?.change?.k === 'mod') void openTextDiff(entry);
+          });
+          item.append(badge);
+          updateExplorerChangeBadge(item, treeEntries.get(filePath));
+        }
         tile.addEventListener('click', () => {
           grid.querySelector('.viewer-explorer-tile[aria-selected="true"]')?.removeAttribute('aria-selected');
           tile.setAttribute('aria-selected', 'true');
@@ -572,7 +821,7 @@ registerPlugin('viewer', {
           selectExplorerTree(selectedPath, folderTile);
         });
         tile.addEventListener('dblclick', action);
-        grid.append(tile);
+        grid.append(item);
       };
       const cmp = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'}).compare;
       for (const name of [...folder.folders.keys()].sort(cmp)) {
@@ -594,7 +843,7 @@ registerPlugin('viewer', {
         tile.scrollIntoView({block:'nearest', inline:'nearest'});
       };
       grid.addEventListener('keydown', event => {
-        if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Enter'].includes(event.key)) return;
+        if (event.target.closest('.viewer-explorer-diff') || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Enter'].includes(event.key)) return;
         const items = tiles();
         const current = event.target.closest('.viewer-explorer-tile')
           || items.find(tile => tile.getAttribute('aria-selected') === 'true')
@@ -640,6 +889,7 @@ registerPlugin('viewer', {
         focusedTile.focus({preventScroll:true});
       }
       grid.scrollTop = explorerScrollTop;
+      if (typeof NiceScroll === 'function') explorerScroll = new NiceScroll(grid);
       renderTabs();
       saveSession();
     }
@@ -802,7 +1052,7 @@ registerPlugin('viewer', {
 
     function readSessionValue(key) {
       try {
-        return JSON.parse(localStorage.getItem(key));
+        return JSON.parse(AccountStorage.getItem(key));
       } catch {
         return null;
       }
@@ -810,7 +1060,7 @@ registerPlugin('viewer', {
 
     function writeSessionValue(key, value) {
       try {
-        localStorage.setItem(key, JSON.stringify(value));
+        AccountStorage.setItem(key, JSON.stringify(value));
       } catch (error) {
         console.warn('無法儲存 Viewer 工作狀態:', error);
       }
@@ -1024,10 +1274,27 @@ registerPlugin('viewer', {
           if (file.kind !== 'del') {
             row.tabIndex = 0;
             row.setAttribute('role', 'button');
-            const open = () => treeEntries.get(file.path)?.button?.click();
+            const open = () => {
+              const entry = treeEntries.get(file.path);
+              if (entry) void openFile(entry, !pinned.has(entry));
+            };
+            const compareVersions = () => {
+              const entry = treeEntries.get(file.path);
+              if (entry) void openTextDiff(entry);
+            };
             row.addEventListener('click', open);
+            if (file.kind === 'mod') {
+              tag.title = '比對新舊文字（Alt + Enter）';
+              tag.addEventListener('click', event => {
+                event.stopPropagation();
+                compareVersions();
+              });
+            }
             row.addEventListener('keydown', event => {
-              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              if (event.altKey && event.key === 'Enter' && file.kind === 'mod') compareVersions();
+              else open();
             });
           }
           li.appendChild(row);
@@ -1116,6 +1383,7 @@ registerPlugin('viewer', {
       for (const entry of treeEntries.values()) {
         entry.badge.textContent = entry.change ? (entry.change.k === 'new' ? '新' : '改') : '';
         entry.badge.dataset.change = entry.change?.k || '';
+        entry.badge.title = entry.change?.k === 'mod' ? '比對新舊文字（Alt + Enter）' : '';
         if (!entry.change) continue;
         if (entry.change.k === 'new') added++;
         else modified++;
@@ -1129,6 +1397,9 @@ registerPlugin('viewer', {
       }
       directory.querySelectorAll('details[data-folder]').forEach(folder => {
         folder.firstElementChild.querySelector('.viewer-tree-change').textContent = counts.get(folder.dataset.folder) || '';
+      });
+      explorer.querySelectorAll('[data-explorer-file]').forEach(item => {
+        updateExplorerChangeBadge(item, treeEntries.get(item.dataset.explorerFile));
       });
       const unseen = added + modified;
       if (!unseen) changesOnly = false;
@@ -1178,6 +1449,8 @@ registerPlugin('viewer', {
       if (activeRecent?.snapshot) {
         for (const file of activeRecent.snapshot.files) delete file.ch;
         activeRecent.snapshot.gone = [];
+        delete activeRecent.reconnectBaseline;
+        activeRecent.baselineCached = [];
         saveRecent(activeRecent);
       }
       refreshChangeBadges();
@@ -1275,6 +1548,14 @@ registerPlugin('viewer', {
       treeCursor?.removeAttribute('data-tree-cursor');
       treeCursor = event.target;
       treeCursor.dataset.treeCursor = '';
+    });
+
+    directory.closest('.viewer-directory').addEventListener('click', event => {
+      if (event.target.closest('button, summary, input, select, textarea, a, [tabindex="0"]')) return;
+      const controls = visibleTreeControls();
+      const target = [treeCursor, selectedButton].find(control => controls.includes(control)) ??
+        controls[0] ?? directory;
+      target.focus({ preventScroll: true });
     });
 
     directory.addEventListener('keydown', event => {
@@ -1719,6 +2000,15 @@ registerPlugin('viewer', {
       }
     });
 
+    function replaceSourceContent(source) {
+      const scrollbar = previewScroll?.scrollbar;
+      if (scrollbar) preview.replaceChildren(source, scrollbar);
+      else {
+        preview.replaceChildren(source);
+        if (typeof NiceScroll === 'function') previewScroll = new NiceScroll(preview);
+      }
+    }
+
     function renderSourceLayout() {
       if (!sourceContents) return;
       const canWrap = sourceLineCount <= 20000;
@@ -1728,7 +2018,7 @@ registerPlugin('viewer', {
       wrapSource.setAttribute('aria-pressed', String(wrap));
       preview.classList.toggle('viewer-wrapped', wrap);
       if (!wrap) {
-        preview.replaceChildren(sourceContents);
+        replaceSourceContent(sourceContents);
         selectSourceLine(sourceLine, true);
         updateFileFind(false, fileMatchIndex);
         return;
@@ -1772,7 +2062,7 @@ registerPlugin('viewer', {
           target.append(text);
         }
       }
-      preview.replaceChildren(rows);
+      replaceSourceContent(rows);
       selectSourceLine(sourceLine, true);
       updateFileFind(false, fileMatchIndex);
     }
@@ -1944,7 +2234,7 @@ registerPlugin('viewer', {
     const searchHistoryClear = searchPanel.querySelector('.viewer-search-history-clear');
     let searchHistory = [];
     try {
-      const stored = JSON.parse(localStorage.getItem(searchHistoryKey) || '[]');
+      const stored = JSON.parse(AccountStorage.getItem(searchHistoryKey) || '[]');
       if (Array.isArray(stored)) searchHistory = [...new Set(stored.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim()))].slice(0, 100);
     } catch (error) { console.warn('無法讀取搜尋紀錄:', error); }
     const searchHistoryStyle = document.createElement('style');
@@ -1961,7 +2251,7 @@ registerPlugin('viewer', {
     `;
     content.append(searchHistoryStyle);
     function saveSearchHistory() {
-      try { localStorage.setItem(searchHistoryKey, JSON.stringify(searchHistory)); }
+      try { AccountStorage.setItem(searchHistoryKey, JSON.stringify(searchHistory)); }
       catch (error) { console.warn('無法儲存搜尋紀錄:', error); }
     }
     function renderSearchHistory() {
@@ -2521,6 +2811,8 @@ registerPlugin('viewer', {
       wrapSource.hidden = true;
       fontTools.hidden = true;
       preview.classList.remove('viewer-numbered');
+      previewScroll?.destroy();
+      previewScroll = undefined;
       preview.textContent = message;
     }
 
@@ -2804,6 +3096,8 @@ registerPlugin('viewer', {
     }
 
     function showFiles(entries, skipped = 0, gone = [], source, directories = [], pendingTabs = [], preservePreview = false) {
+      window.plugins.viewer.currentAction = 'list';
+      window.plugins.viewer.guestDiff?.syncVisibility();
       changePanelOpened = false;
       changePanel.hidden = true;
       const session = source && readSessionValue('site-viewer-session:' + source);
@@ -2915,6 +3209,18 @@ registerPlugin('viewer', {
           name.textContent = entry.file.name;
           entry.badge = document.createElement('span');
           entry.badge.className = 'viewer-tree-change';
+          entry.badge.addEventListener('click', event => {
+            if (entry.change?.k !== 'mod') return;
+            event.stopPropagation();
+            void openTextDiff(entry);
+          });
+          button.addEventListener('keydown', event => {
+            if (event.altKey && event.key === 'Enter' && entry.change?.k === 'mod') {
+              event.preventDefault();
+              event.stopPropagation();
+              void openTextDiff(entry);
+            }
+          });
           button.append(icon, name, entry.badge);
           entry.button = button;
           button.addEventListener('click', () => {
@@ -3055,6 +3361,42 @@ registerPlugin('viewer', {
     }
 
     function accessRecents(update) {
+      if (AccountStorage.isLocked()) return accessLegacyRecents(update, 'guest-recent-folders');
+      const scope = AccountStorage.localScope();
+      if (scope) {
+        const key = 'viewer-recent-folders';
+        const localKey = 'folder-handles:' + scope;
+        return (async () => {
+          const saved = await accessLegacyRecents(undefined, localKey).catch(error => {
+            if (update) throw error;
+            return [];
+          });
+          if (AccountStorage.localScope() !== scope) throw new Error('帳號已切換。');
+          const localById = new Map(saved.map(record => [record.id, record]));
+          let records = normalizeViewerRecents(JSON.parse(AccountStorage.getItem(key))).map(record => {
+            const local = localById.get(record.id);
+            return { ...record, cached: undefined, baselineCached: undefined,
+              handles: local?.handles ?? record.handles, textEnvelope: local?.textEnvelope,
+              identityVerified: Boolean(local?.handles.length) || record.identityVerified };
+          });
+          if (update) {
+            records = update(records);
+            AccountStorage.setItem(key, JSON.stringify(records.map(record => ({
+              ...record, handles: [], cached: undefined, baselineCached: undefined, textEnvelope: undefined
+            }))));
+            await AccountStorage.flush();
+            await accessLegacyRecents(() => records.filter(record => record.handles.length || record.textEnvelope).map(record => ({
+              id: record.id, label: record.label, identityVerified: true, handles: record.handles,
+              textEnvelope: record.textEnvelope
+            })), localKey);
+          }
+          return records;
+        })();
+      }
+      return accessLegacyRecents(update);
+    }
+
+    function accessLegacyRecents(update, key = 'recent-folders') {
       return new Promise((resolve, reject) => {
         const request = indexedDB.open('site-viewer', 1);
         request.onupgradeneeded = () => request.result.createObjectStore('settings');
@@ -3063,33 +3405,85 @@ registerPlugin('viewer', {
           const db = request.result;
           const tx = db.transaction('settings', update ? 'readwrite' : 'readonly');
           const store = tx.objectStore('settings');
-          const read = store.get('recent-folders');
+          const read = store.get(key);
           let records;
           read.onsuccess = () => {
             records = normalizeViewerRecents(read.result);
             if (!update) return;
             try {
               records = update(records);
-              store.put(records, 'recent-folders');
+              store.put(records, key);
             } catch (error) {
               reject(error);
               tx.abort();
             }
           };
-          tx.oncomplete = () => { db.close(); resolve(records); };
+          tx.oncomplete = () => {
+            db.close();
+            resolve(records);
+            if (update && (key === 'recent-folders' || key === 'guest-recent-folders')) {
+              void this.guestDiff?.refresh();
+            }
+          };
           tx.onabort = () => { db.close(); reject(tx.error); };
         };
       });
     }
 
-    function saveRecent(record) {
+    function portableRecents(records) {
+      return JSON.stringify(records.map(record => ({
+        ...record,
+        label: record.label || record.handles.map(handle => handle.name).join('、'),
+        handles: [], cached: undefined, baselineCached: undefined, textEnvelope: undefined
+      })));
+    }
+
+    this.readLegacyRecents = async () => {
+      const [guest, legacy] = await Promise.all([
+        accessLegacyRecents(undefined, 'guest-recent-folders'), accessLegacyRecents()
+      ]);
+      return portableRecents(normalizeViewerRecents([...guest, ...legacy]));
+    };
+
+    async function hydrateRecentText(record) {
+      if (!record.textEnvelope || record.cached) return;
+      try {
+        const text = await AccountStorage.readViewerText(record.textEnvelope);
+        if (text.revision !== (record.updatedAt ?? record.savedAt)) return;
+        const restore = files => files.map(({ path, text, mtime }) => ({ path, mtime, file: new Blob([text]) }));
+        record.cached = restore(text.cached);
+        record.baselineCached = restore(text.baseline);
+      } catch (error) {
+        console.warn('無法讀取 Viewer 本機文字版本:', error);
+      }
+    }
+
+    async function saveRecent(record) {
+      const scope = AccountStorage.localScope();
+      if (scope && record.captureMode === 'text' && record.cached) {
+        try {
+          const serialize = files => Promise.all(files.map(async ({ path, file, mtime }) => ({
+            path, mtime, text: await file.text()
+          })));
+          const [cached, baseline] = await Promise.all([
+            serialize(record.cached), serialize(record.baselineCached ?? [])
+          ]);
+          const revision = record.updatedAt ?? record.savedAt;
+          record.textEnvelope = cached.length || baseline.length
+            ? await AccountStorage.sealViewerText({ cached, baseline, revision }, scope) : undefined;
+        } catch (error) {
+          console.warn('無法保存 Viewer 本機文字版本:', error);
+          showToast('無法保存文字版本，仍可使用雜湊比對。');
+        }
+        if (AccountStorage.localScope() !== scope) return;
+      }
       const key = viewerSourceKey(record);
       const write = value => accessRecents(records => removedRecords.has(value.id) ? records : [
         value, ...records.filter(item => item.id !== value.id && viewerSourceKey(item) !== key),
       ]);
       return write(record)
         .catch(error => {
-          if (!record.handles.length) throw error;
+          if (!record.handles.length || AccountStorage.isActive()) throw error;
           console.warn('無法儲存資料夾憑證，改存文字快照:', error);
           return write({ ...record, handles: [] });
         })
@@ -3100,45 +3494,541 @@ registerPlugin('viewer', {
         .then(records => { if (records) renderRecents(records); });
     }
 
-    function fileIndex(entries) {
-      return entries.map(({ path, file }) => ({ path, size: file.size, mtime: file.lastModified }));
+    async function fileIndex(entries) {
+      const files = [];
+      for (const { path, file } of entries) {
+        const item = { path, size: file.size, mtime: file.lastModified };
+        if (globalThis.crypto?.subtle) {
+          try {
+            const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+            item.hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
+          } catch (error) {
+            console.warn('無法計算 Viewer 檔案雜湊:', path, error);
+          }
+        }
+        files.push(item);
+      }
+      return files;
     }
 
-    async function captureTextSnapshot(entries) {
+    const textFileLimit = 3 * 1024 * 1024;
+    const textSnapshotLimit = 24 * 1024 * 1024;
+
+    function canReadSnapshotText(file) {
+      return file.size <= textFileLimit && isSnapshotTextType(file);
+    }
+
+    function isSnapshotTextType(file) {
+      return !/^(image|audio|video)\/|^application\/pdf$/.test(file.type) &&
+        !/\.(pdf|zip|7z|rar|gz|bz2|xz|tar)$/i.test(file.name ?? '');
+    }
+
+    async function openTextDiff(entry) {
+      const record = activeRecent;
+      const old = record?.baselineCached?.find(item => item.path === entry.path);
+      if (!old) {
+        showToast(record?.captureMode === 'hash' ? '這份快照只存了雜湊，沒有舊版文字。' : '這個檔案沒有可比對的舊版文字。');
+        return;
+      }
+      if (!canReadSnapshotText(entry.file)) {
+        showToast('逐行比對支援 3 MiB 以內的文字檔。');
+        return;
+      }
+      const version = loadVersion;
+      try {
+        const [before, current] = await Promise.all([old.file.text(), entry.file.arrayBuffer()]);
+        if (version !== loadVersion || activeRecent !== record || document.getElementById('viewerTextDiffTitle')) return;
+        const bytes = new Uint8Array(current);
+        if (bytes.includes(0)) {
+          showToast('目前版本無法作為文字檔比對。');
+          return;
+        }
+        let after;
+        try { after = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+        catch { showToast('目前版本無法以 UTF-8 解碼。'); return; }
+        const settings = getExplorerSettings();
+        const limits = { ...viewerDiffDefaults, ...settings };
+        const diff = viewerLineDiff(before, after, limits);
+        const versions = [before, after].map(text => text.replace(/\r\n?/g, '\n'));
+        const formatLimit = value => value.toLocaleString('en-US');
+        const highlightLimits = `語法高亮限新舊合計 ${formatLimit(limits.diffHighlightMaxLines)} 行，且各版最多 ${formatLimit(limits.diffHighlightMaxChars)} 字元。`;
+        const combinedLines = versions.reduce((total, text) => total + text.split('\n').length, 0);
+        const withinHighlightLimit = combinedLines <= limits.diffHighlightMaxLines &&
+          versions.every(text => text.length <= limits.diffHighlightMaxChars);
+        const highlightEnabled = settings.diffSyntaxHighlight !== false;
+        const initialHighlightStatus = !highlightEnabled ? '語法高亮已在檔案瀏覽設定關閉。' :
+          !withinHighlightLimit ? '已超過語法高亮上限。' :
+          '正在載入語法高亮。';
+        const dialog = document.createElement('dialog');
+        dialog.className = 'app-dialog';
+        dialog.setAttribute('aria-labelledby', 'viewerTextDiffTitle');
+        dialog.innerHTML = `<section class="app-dialog-panel-medium viewer-text-diff-panel">
+          <header class="app-modal-header">
+            <span class="app-modal-header-icon viewer-text-diff-icon" aria-hidden="true">${viewerFileSvg(entry.file.name)}</span>
+            <div class="app-modal-header-info">
+              <h2 class="app-modal-header-title" id="viewerTextDiffTitle">文字版本比對</h2>
+              <p class="app-modal-header-subtitle"></p>
+            </div>
+            <button type="button" class="app-modal-header-close" aria-label="關閉" autofocus>×</button>
+          </header>
+          <div class="viewer-text-diff-tools" role="group" aria-label="差異比對工具">
+            <button class="btn-reset" type="button" data-prev-diff disabled>上一處</button>
+            <button class="btn-reset" type="button" data-next-diff disabled>下一處</button>
+            <span class="viewer-text-diff-position" data-diff-position role="status"></span>
+            <button class="btn-reset" type="button" data-wrap-diff aria-pressed="false">斷行顯示</button>
+          </div>
+          <p class="viewer-text-diff-limits"></p>
+          <div class="app-dialog-body viewer-text-diff-body">
+            <p class="viewer-text-diff-note" hidden></p>
+            <div class="viewer-text-diff-grid">
+              <div><div class="viewer-text-diff-version"><strong>舊版</strong><time data-old-time></time></div><pre data-old></pre></div>
+              <div class="viewer-text-diff-splitter" role="separator" tabindex="0" aria-label="調整新舊版本寬度" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"></div>
+              <div><div class="viewer-text-diff-version"><strong>目前版本</strong><time data-current-time></time></div><pre data-current></pre></div>
+            </div>
+          </div>
+          <footer class="viewer-text-diff-footer">
+            <div><input type="range" min="0" value="0" data-old-scroll aria-label="舊版水平捲軸" hidden><small data-old-stats></small></div>
+            <div><input type="range" min="0" value="0" data-current-scroll aria-label="目前版本水平捲軸" hidden><small data-current-stats></small></div>
+          </footer>
+          <div class="viewer-text-diff-map" hidden role="group" aria-label="差異導覽">
+            <div data-removed-map></div><div data-added-map></div>
+            <button type="button" class="viewer-text-diff-viewport" role="slider" aria-label="目前查看範圍" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></button>
+          </div></section>`;
+        dialog.querySelector('.app-modal-header-subtitle').textContent = entry.path;
+        const highlightNote = dialog.querySelector('.viewer-text-diff-limits');
+        const showHighlightStatus = status => { highlightNote.textContent = status + ' ' + highlightLimits; };
+        showHighlightStatus(initialHighlightStatus);
+        for (const [selector, mtime] of [['[data-old-time]', old.mtime], ['[data-current-time]', entry.file.lastModified]]) {
+          const time = dialog.querySelector(selector);
+          const date = new Date(mtime);
+          if (mtime != null && Number.isFinite(date.getTime())) {
+            time.dateTime = date.toISOString();
+            time.textContent = date.toLocaleString('zh-TW');
+            time.title = '檔案最後修改時間';
+          } else {
+            time.textContent = '修改時間未知';
+          }
+        }
+        const panes = [dialog.querySelector('[data-old]'), dialog.querySelector('[data-current]')];
+        const horizontal = [dialog.querySelector('[data-old-scroll]'), dialog.querySelector('[data-current-scroll]')];
+        const footer = dialog.querySelector('.viewer-text-diff-footer');
+        const syncHorizontal = () => panes.forEach((pane, index) => {
+          const scrollbar = horizontal[index];
+          const max = Math.max(0, pane.scrollWidth - pane.clientWidth);
+          scrollbar.max = max;
+          scrollbar.value = pane.scrollLeft;
+          scrollbar.hidden = !max;
+        });
+        panes.forEach((pane, index) => {
+          const scrollbar = horizontal[index];
+          scrollbar.oninput = () => { pane.scrollLeft = Number(scrollbar.value); };
+          pane.addEventListener('scroll', () => { scrollbar.value = pane.scrollLeft; }, { passive: true });
+        });
+        const countLines = text => text ? text.split(/\r\n|\n|\r/).length : 0;
+        const deleted = diff?.filter(([left, right]) => left !== null && right === null).length;
+        const added = diff?.filter(([left, right]) => left === null && right !== null).length;
+        dialog.querySelector('[data-old-stats]').textContent =
+          '舊版 · ' + formatLimit(countLines(before)) + ' 行 · ' + formatLimit(versions[0].length) + ' 字元' + (diff ? ' · 刪除 ' + deleted.toLocaleString('en-US') + ' 行' : '');
+        dialog.querySelector('[data-current-stats]').textContent =
+          '目前版本 · ' + formatLimit(countLines(after)) + ' 行 · ' + formatLimit(versions[1].length) + ' 字元' + (diff ? ' · 新增 ' + added.toLocaleString('en-US') + ' 行' : '');
+        const panel = dialog.querySelector('.viewer-text-diff-panel');
+        const body = dialog.querySelector('.viewer-text-diff-body');
+        const wrap = dialog.querySelector('[data-wrap-diff]');
+        const map = dialog.querySelector('.viewer-text-diff-map');
+        const viewport = map.querySelector('.viewer-text-diff-viewport');
+        const previous = dialog.querySelector('[data-prev-diff]');
+        const next = dialog.querySelector('[data-next-diff]');
+        const position = dialog.querySelector('[data-diff-position]');
+        const hunks = [];
+        const markers = [];
+        let navigationIndex = -1;
+        const range = () => Math.max(0, body.scrollHeight - body.clientHeight);
+        const offset = node => node.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
+        const updateViewport = () => {
+          if (map.hidden || !body.scrollHeight) return;
+          const trackHeight = map.clientHeight;
+          const proportionalHeight = trackHeight * body.clientHeight / body.scrollHeight;
+          const handleHeight = Math.min(trackHeight, Math.max(24, proportionalHeight));
+          const maxScroll = range();
+          const progress = maxScroll ? Math.min(1, Math.max(0, body.scrollTop / maxScroll)) : 0;
+          viewport.style.height = handleHeight + 'px';
+          viewport.style.top = (progress * (trackHeight - handleHeight)) + 'px';
+          viewport.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
+        };
+        const jump = index => {
+          if (index < 0 || index >= hunks.length) return;
+          navigationIndex = index;
+          body.scrollTop = offset(panes[0].children[hunks[index]]) - body.clientHeight / 3;
+          previous.disabled = index === 0;
+          next.disabled = index === hunks.length - 1;
+          position.textContent = '第 ' + (index + 1) + ' / ' + hunks.length + ' 處';
+        };
+        previous.onclick = () => jump(navigationIndex - 1);
+        next.onclick = () => jump(navigationIndex + 1);
+        let drag;
+        viewport.onpointerdown = event => {
+          if (event.button !== 0 || !range()) return;
+          drag = { y: event.clientY, scroll: body.scrollTop };
+          viewport.setPointerCapture(event.pointerId);
+        };
+        viewport.onpointermove = event => {
+          if (!drag || !viewport.hasPointerCapture(event.pointerId)) return;
+          const travel = map.clientHeight - viewport.getBoundingClientRect().height;
+          if (travel > 0) body.scrollTop = drag.scroll + (event.clientY - drag.y) / travel * range();
+        };
+        viewport.onlostpointercapture = () => { drag = undefined; };
+        viewport.onkeydown = event => {
+          const moves = { ArrowUp: -40, ArrowDown: 40, PageUp: -body.clientHeight, PageDown: body.clientHeight,
+            Home: -range(), End: range() };
+          if (!Object.hasOwn(moves, event.key)) return;
+          event.preventDefault();
+          body.scrollTop += moves[event.key];
+        };
+        map.addEventListener('wheel', event => {
+          if (event.ctrlKey || !event.deltaY || !range()) return;
+          event.preventDefault();
+          const scale = event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? body.clientHeight : 1;
+          body.scrollTop += event.deltaY * scale;
+        }, { passive: false });
+        body.addEventListener('scroll', updateViewport, { passive: true });
+        let diffScroll;
+        const fitRows = () => {
+          if (diff) {
+            const left = panes[0].children;
+            const right = panes[1].children;
+            if (panel.classList.contains('is-wrapped')) {
+              for (let index = 0; index < left.length; index++) {
+                left[index].style.minHeight = '';
+                right[index].style.minHeight = '';
+              }
+              const heights = Array.from(left, (row, index) => Math.max(row.offsetHeight, right[index].offsetHeight));
+              heights.forEach((height, index) => {
+                left[index].style.minHeight = right[index].style.minHeight = height + 'px';
+              });
+            } else {
+              for (const pane of panes) for (const row of pane.children) row.style.minHeight = '';
+            }
+            for (const { marker, target, last } of markers) {
+              marker.style.top = (offset(target) / body.scrollHeight * 100) + '%';
+              marker.style.height = ((offset(last) + last.offsetHeight - offset(target)) / body.scrollHeight * 100) + '%';
+            }
+          }
+          const showMap = markers.length > 0 || range() > 0;
+          map.hidden = !showMap;
+          panel.classList.toggle('has-diff-map', showMap);
+          if (showMap) map.style.insetBlockStart = (body.offsetTop + 10) + 'px';
+          syncHorizontal();
+          panel.style.setProperty('--diff-footer-height', footer.offsetHeight + 'px');
+          updateViewport();
+          diffScroll?.updateScrollbar();
+        };
+        const grid = dialog.querySelector('.viewer-text-diff-grid');
+        const splitter = grid.querySelector('.viewer-text-diff-splitter');
+        let split = 50;
+        let splitFrame = 0;
+        const resizePanes = value => {
+          split = Math.min(80, Math.max(20, value));
+          panel.style.setProperty('--viewer-diff-split', split + '%');
+          splitter.setAttribute('aria-valuenow', String(Math.round(split)));
+          if (!splitFrame) splitFrame = requestAnimationFrame(() => {
+            splitFrame = 0;
+            fitRows();
+          });
+        };
+        const moveSplitter = event => {
+          const bounds = grid.getBoundingClientRect();
+          if (bounds.width) resizePanes((event.clientX - bounds.left) / bounds.width * 100);
+        };
+        splitter.onpointerdown = event => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          splitter.focus();
+          splitter.setPointerCapture(event.pointerId);
+        };
+        splitter.onpointermove = event => {
+          if (splitter.hasPointerCapture(event.pointerId)) moveSplitter(event);
+        };
+        splitter.onkeydown = event => {
+          const values = { ArrowLeft: split - 5, ArrowRight: split + 5, Home: 20, End: 80 };
+          if (!Object.hasOwn(values, event.key)) return;
+          event.preventDefault();
+          resizePanes(values[event.key]);
+        };
+        wrap.onclick = () => {
+          const wrapped = panel.classList.toggle('is-wrapped');
+          wrap.setAttribute('aria-pressed', String(wrapped));
+          fitRows();
+        };
+        if (diff) {
+          const fragments = panes.map(() => document.createDocumentFragment());
+          const lineNumbers = [0, 0];
+          for (const row of diff) row.forEach((line, index) => {
+            const node = document.createElement('span');
+            node.textContent = line ?? '';
+            node.dataset.diffSign = ' ';
+            if (line !== null) node.dataset.lineNumber = ++lineNumbers[index];
+            if (line === null) node.className = 'is-gap';
+            else if (row[1 - index] === null) {
+              node.className = index ? 'is-added' : 'is-removed';
+              node.dataset.diffSign = index ? '+' : '-';
+            }
+            fragments[index].append(node);
+          });
+          panes.forEach((pane, index) => pane.append(fragments[index]));
+          viewerMarkInlineDiff(diff, panes);
+          let hunk = -1;
+          const hunkByRow = diff.map((row, index) => {
+            if (row[0] !== null && row[1] !== null) return -1;
+            if (!index || diff[index - 1].every(line => line !== null)) {
+              hunk++;
+              hunks.push(index);
+            }
+            return hunk;
+          });
+          position.textContent = hunks.length ? '' : '0 處行差異';
+          const tracks = [map.querySelector('[data-removed-map]'), map.querySelector('[data-added-map]')];
+          tracks.forEach((track, index) => {
+            const rows = panes[index].children;
+            for (let start = 0; start < diff.length;) {
+              if (diff[start][index] === null || diff[start][1 - index] !== null) {
+                start++;
+                continue;
+              }
+              let end = start + 1;
+              while (end < diff.length && diff[end][index] !== null && diff[end][1 - index] === null) end++;
+              const target = rows[start];
+              const marker = document.createElement('button');
+              marker.type = 'button';
+              marker.className = index ? 'is-added' : 'is-removed';
+              marker.title = (index ? '新版新增' : '舊版刪除') + '，第 ' + target.dataset.lineNumber + ' 行';
+              marker.setAttribute('aria-label', marker.title);
+              const hunk = hunkByRow[start];
+              marker.onclick = () => jump(hunk);
+              markers.push({ marker, target, last: rows[end - 1] });
+              track.append(marker);
+              start = end;
+            }
+          });
+          if (before !== after && diff.every(([left, right]) => left === right)) {
+            const note = dialog.querySelector('.viewer-text-diff-note');
+            note.hidden = false;
+            note.textContent = '文字相同，換行格式不同。';
+          }
+        } else {
+          const note = dialog.querySelector('.viewer-text-diff-note');
+          note.hidden = false;
+          note.textContent = `超過逐行比對上限（新舊合計 ${formatLimit(limits.diffMaxLines)} 行）或計算上限（${formatLimit(limits.diffMaxCells)} 格），並排列出兩版原文。`;
+          position.textContent = '未計算差異位置';
+          panes[0].textContent = before;
+          panes[1].textContent = after;
+        }
+        const close = () => ModalManager.closeDialog(dialog);
+        dialog.querySelector('.app-modal-header-close').onclick = close;
+        dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
+        const resize = new ResizeObserver(fitRows);
+        dialog.addEventListener('close', () => {
+          cancelAnimationFrame(splitFrame);
+          resize.disconnect();
+          diffScroll?.destroy();
+          dialog.remove();
+        }, { once: true });
+        document.body.append(dialog);
+        ModalManager.showDialog(dialog, close);
+        if (typeof NiceScroll === 'function') diffScroll = new NiceScroll(body);
+        fitRows();
+        if (hunks.length) jump(0);
+        resize.observe(body);
+        if (highlightEnabled && withinHighlightLimit) {
+          try {
+            const html = await Promise.all(versions.map(text => viewerText.highlight(entry.file.name, text, limits.diffHighlightMaxChars)));
+            if (!dialog.open) return;
+            if (html.some(value => value === null)) {
+              showHighlightStatus('此檔案格式未提供語法高亮。');
+              return;
+            }
+            const highlightedLines = html.map(viewerDiffHighlightLines);
+            panes.forEach((pane, index) => {
+              if (!diff) {
+                const source = document.createElement('code');
+                highlightedLines[index].forEach((tokens, line) => {
+                  if (line) source.append('\n');
+                  source.append(tokens);
+                });
+                pane.replaceChildren(source);
+                return;
+              }
+              for (const row of pane.children) {
+                const tokens = highlightedLines[index][Number(row.dataset.lineNumber) - 1];
+                if (tokens) row.replaceChildren(tokens);
+              }
+            });
+            if (diff) viewerMarkInlineDiff(diff, panes);
+            showHighlightStatus('已啟用語法高亮。');
+            fitRows();
+          } catch {
+            if (dialog.open) showHighlightStatus('語法高亮無法載入。');
+          }
+        }
+      } catch (error) {
+        console.warn('無法開啟 Viewer 文字比對:', error);
+        showToast('無法讀取新舊文字版本。');
+      }
+    }
+
+    async function captureTextSnapshot(entries, report) {
       const files = [];
-      let remaining = 24 * 1024 * 1024;
+      let remaining = textSnapshotLimit;
+      const stats = { scanned: 0, oversized: 0, overBudget: 0, nonText: 0, unreadable: 0 };
+      const decoder = new TextDecoder('utf-8', { fatal: true });
       for (const { path, file } of entries) {
-        if (file.size > 3 * 1024 * 1024 || file.size > remaining ||
-            /^(image|audio|video)\/|^application\/pdf$/.test(file.type)) continue;
         try {
+          if (!isSnapshotTextType(file)) { stats.nonText++; continue; }
+          if (file.size > textFileLimit) { stats.oversized++; continue; }
+          if (file.size > remaining) { stats.overBudget++; continue; }
           const bytes = new Uint8Array(await file.arrayBuffer());
-          if (bytes.includes(0)) continue;
+          if (bytes.includes(0)) { stats.nonText++; continue; }
+          try { decoder.decode(bytes); } catch { stats.nonText++; continue; }
           files.push({ path, file: new Blob([bytes], { type: file.type }), mtime: file.lastModified });
           remaining -= file.size;
         } catch (error) {
+          stats.unreadable++;
           console.warn('略過無法建立快照的檔案:', path, error);
+        } finally {
+          stats.scanned++;
+          report?.(stats, files.length);
         }
       }
       return files;
     }
 
-    function createSource(entries, handles, directories) {
+    function captureTextWithProgress(entries) {
+      return new Promise((resolve, reject) => {
+        const dialog = document.createElement('dialog');
+        dialog.className = 'app-dialog';
+        dialog.setAttribute('aria-labelledby', 'viewerCaptureProgressTitle');
+        dialog.innerHTML = `<section class="app-dialog-panel-medium">
+          <header class="app-modal-header">
+            <span class="app-modal-header-icon" aria-hidden="true">${resolveIcon('folder')}</span>
+            <div class="app-modal-header-info">
+              <h2 class="app-modal-header-title" id="viewerCaptureProgressTitle">掃描文字快照</h2>
+              <p class="app-modal-header-subtitle">檢查可以保存原文的檔案</p>
+            </div>
+          </header>
+          <div class="app-dialog-body">
+            <progress class="viewer-capture-progress" aria-label="文字掃描進度"></progress>
+            <div role="status" data-summary>準備掃描…</div>
+            <div data-limits hidden></div>
+          </div>
+          <footer class="app-dialog-footer"><button class="btn-confirm" type="button" disabled>開啟</button></footer>
+        </section>`;
+        const progress = dialog.querySelector('progress');
+        const summary = dialog.querySelector('[data-summary]');
+        const limits = dialog.querySelector('[data-limits]');
+        const done = dialog.querySelector('button');
+        progress.max = Math.max(entries.length, 1);
+        progress.value = 0;
+        let result;
+        let error;
+        const close = () => { if (!done.disabled) ModalManager.closeDialog(dialog); };
+        done.onclick = close;
+        dialog.addEventListener('close', () => {
+          dialog.remove();
+          if (error) reject(error);
+          else resolve(result);
+        }, { once: true });
+        document.body.append(dialog);
+        ModalManager.showDialog(dialog, close);
+        let stats = { oversized: 0, overBudget: 0, nonText: 0, unreadable: 0 };
+        captureTextSnapshot(entries, (current, captured) => {
+          stats = current;
+          progress.value = stats.scanned;
+          summary.textContent = '已掃描 ' + stats.scanned + ' / ' + entries.length + ' 個檔案，已收錄 ' + captured + ' 個文字檔。';
+        }).then(files => {
+          result = files;
+          dialog.querySelector('h2').textContent = '文字掃描完成';
+          progress.value = progress.max;
+          summary.textContent = '可收錄 ' + files.length + ' 個文字檔，共 ' +
+            (files.reduce((bytes, item) => bytes + item.file.size, 0) / 2 ** 20).toFixed(2) + ' MiB。';
+          limits.hidden = false;
+          limits.textContent = '略過：超過單檔 3 MiB ' + stats.oversized + ' 個、超過快照 24 MiB ' +
+            stats.overBudget + ' 個、非 UTF-8 文字 ' + stats.nonText + ' 個、讀取失敗 ' + stats.unreadable + ' 個。';
+          done.disabled = false;
+          done.focus();
+        }).catch(reason => {
+          error = reason;
+          done.disabled = false;
+          close();
+        });
+      });
+    }
+
+    async function createSource(entries, handles, directories) {
+      const now = Date.now();
       return {
         id: crypto.randomUUID(),
         label: sourceLabel(entries, directories),
         handles,
         identityVerified: handles.length > 0,
-        savedAt: Date.now(),
+        savedAt: now,
+        updatedAt: now,
         directories: [...directories],
         directoryCount: [...directories].filter(path => path.includes('/')).length,
-        snapshot: { files: fileIndex(entries), gone: [] },
+        snapshot: { files: await fileIndex(entries), gone: [] },
       };
+    }
+
+    function chooseCaptureMode() {
+      return new Promise(resolve => {
+        const dialog = document.createElement('dialog');
+        dialog.className = 'app-dialog';
+        dialog.setAttribute('aria-labelledby', 'viewerCaptureTitle');
+        dialog.innerHTML = `<section class="app-dialog-panel-medium">
+          <header class="app-modal-header">
+            <span class="app-modal-header-icon" aria-hidden="true">${resolveIcon('folder')}</span>
+            <div class="app-modal-header-info">
+              <h2 class="app-modal-header-title" id="viewerCaptureTitle">選擇快照收錄方式</h2>
+              <p class="app-modal-header-subtitle">兩種方式都能偵測檔案異動</p>
+            </div>
+            <button type="button" class="app-modal-header-close" aria-label="關閉">×</button>
+          </header>
+          <div class="app-dialog-body">
+            <p>「保留文字版本」可逐行比對，單檔上限 3 MiB，每份快照上限 24 MiB。掃描後會列出實際收錄與略過筆數。</p>
+          </div>
+          <footer class="app-dialog-footer">
+            <button type="button" class="btn-reset" data-mode="">取消</button>
+            <button type="button" class="btn-reset" data-mode="hash" autofocus>只存雜湊</button>
+            <button type="button" class="btn-confirm" data-mode="text">保留文字版本</button>
+          </footer></section>`;
+        let selected = '';
+        const close = () => ModalManager.closeDialog(dialog);
+        dialog.querySelector('.app-modal-header-close').onclick = close;
+        dialog.addEventListener('close', () => { dialog.remove(); resolve(selected); }, { once: true });
+        for (const button of dialog.querySelectorAll('[data-mode]')) button.onclick = () => {
+          selected = button.dataset.mode;
+          close();
+        };
+        document.body.append(dialog);
+        ModalManager.showDialog(dialog, close);
+      });
+    }
+
+    function retainBaselineText(record, changes, removed) {
+      const pending = new Set([...Object.keys(changes), ...removed.map(file => file.path)]);
+      const oldChanges = new Set((record.snapshot?.files ?? []).filter(file => file.ch).map(file => file.path));
+      const baseline = new Map((record.baselineCached ?? []).map(item => [item.path, item]));
+      for (const item of record.cached ?? []) {
+        if (pending.has(item.path) && !oldChanges.has(item.path) && !baseline.has(item.path)) baseline.set(item.path, item);
+      }
+      let remaining = textSnapshotLimit;
+      return [...baseline.values()].filter(item => {
+        if (!pending.has(item.path) || !(item.file instanceof Blob) || item.file.size > remaining) return false;
+        remaining -= item.file.size;
+        return true;
+      });
     }
 
     async function rememberSource(entries, record) {
       activeRecent = record;
-      if (record.handles.length) await saveRecent(record);
-      record.cached = await captureTextSnapshot(entries);
       await saveRecent(record);
     }
 
@@ -3200,10 +4090,72 @@ registerPlugin('viewer', {
       return true;
     }
 
-    async function openRecent(record, auto = false) {
+    async function connectRecent(id, handles, scope, version) {
+      const isCurrent = () => version === loadVersion && AccountStorage.localScope() === scope &&
+        !removedRecords.has(id);
+      const records = await accessRecents();
+      if (!isCurrent()) return;
+      const current = records.find(item => item.id === id);
+      if (!current?.snapshot) throw new Error('找不到原本的 Viewer 快照。');
+      const roots = viewerRecentRoots(current);
+      const names = new Set();
+      const selected = handles.map(handle => uniqueRootName(handle.name, names));
+      if (selected.length !== roots.length || selected.some(name => !roots.includes(name))) {
+        throw new Error('請選擇原資料夾「' + roots.join('、') + '」。');
+      }
+      const link = { id, label: current.label, identityVerified: true, handles, textEnvelope: current.textEnvelope };
+      await accessLegacyRecents(items => isCurrent()
+        ? [link, ...items.filter(item => item.id !== id)] : items, 'folder-handles:' + scope);
+      if (!isCurrent()) return;
+
+      const linked = await accessRecents();
+      if (!isCurrent()) return;
+      const next = linked.find(item => item.id === id);
+      if (next?.handles.length !== handles.length) throw new Error('未能寫入本機資料夾授權。');
+      const oldKey = viewerSourceKey(current);
+      const session = readSessionValue('site-viewer-session:' + oldKey);
+      if (oldKey !== id && session) writeSessionValue('site-viewer-session:' + id, session);
+      next.reconnectBaseline ??= viewerReconnectBaseline(next.snapshot);
+      renderRecents(linked);
+      await openRecent(next, false, true);
+    }
+
+    function viewerRecentRoots(record) {
+      const paths = record.directories?.length ? record.directories
+        : (record.snapshot?.files ?? []).map(file => file.path).filter(path => path.includes('/'));
+      const roots = [...new Set(paths.map(path => path.split('/')[0]).filter(Boolean))];
+      return roots.length ? roots : (record.label || '').split('、').filter(Boolean);
+    }
+
+    async function reconnectRecent(record, button) {
+      const scope = AccountStorage.localScope();
+      if (!scope) return;
+      const version = ++loadVersion;
+      button.disabled = true;
+      button.textContent = '連結中…';
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'read' });
+        if (version !== loadVersion || AccountStorage.localScope() !== scope) return;
+        await connectRecent(record.id, [handle], scope, version);
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          if (version === loadVersion) showToast('未完成資料夾選擇，舊快照已保留。');
+        } else if (AccountStorage.localScope() === scope) {
+          showToast('無法重新連結資料夾：' + error.message);
+        }
+      } finally {
+        button.disabled = false;
+        button.textContent = '重新連結';
+      }
+    }
+
+    async function openRecent(record, auto = false, reconnected = false) {
 		window.plugins.viewer.currentAction = 'list';
+        window.plugins.viewer.guestDiff?.syncVisibility();
       const version = ++loadVersion;
       const { handles } = record;
+      await hydrateRecentText(record);
+      if (version !== loadVersion) return;
       if (!handles.length) {
         if (!restoreTextSnapshot(record)) showStatus('這筆紀錄沒有可還原的文字檔。');
         return;
@@ -3249,6 +4201,9 @@ registerPlugin('viewer', {
         }
       }
       if (version !== loadVersion) return;
+      if (reconnected && skipped.length) {
+        showToast('已儲存資料夾連結，但這次未能完整掃描，已保留舊快照。');
+      }
       if (!entries.length && skipped.length) {
         if (!restoreTextSnapshot(record)) showStatus('無法重新開啟資料夾。請重新拖入或選擇資料夾。');
         return;
@@ -3258,23 +4213,33 @@ registerPlugin('viewer', {
         showFiles(entries, skipped.length, [], viewerSourceKey(record), directories);
         return;
       }
-      const files = fileIndex(entries);
-      const { chg, gone, counts } = record.snapshot
-        ? viewerDiffIndex(record.snapshot, files, Date.now())
+      const files = await fileIndex(entries);
+      if (version !== loadVersion) return;
+      const baseline = record.reconnectBaseline ?? record.snapshot;
+      const { chg, gone, counts } = baseline
+        ? viewerDiffIndex(baseline, files, Date.now())
         : { chg: Object.create(null), gone: [] };
       for (const file of files) if (chg[file.path]) file.ch = chg[file.path];
       for (const entry of entries) entry.change = chg[entry.path];
+      const scannedAt = Date.now();
+      if (record.captureMode === 'text' || (!record.captureMode && record.cached?.some(item => item.file instanceof Blob))) {
+        record.captureMode = 'text';
+        record.baselineCached = retainBaselineText(record, chg, gone);
+        record.cached = await captureTextSnapshot(entries);
+        if (version !== loadVersion) return;
+      }
+      record.updatedAt = viewerSnapshotUpdatedAt(record, files, directories, scannedAt);
       record.snapshot = { files, gone };
       record.directories = [...directories];
       record.directoryCount = record.directories.filter(path => path.includes('/')).length;
-      record.savedAt = Date.now();
+      record.savedAt = scannedAt;
       const resumeSearch = restoredEarly && !searchPanel.hidden;
       showFiles(entries, 0, gone, viewerSourceKey(record), directories, [], restoredEarly);
       if (resumeSearch) {
         searchPanel.hidden = false;
         if (searchInput.value.trim()) submitSearch();
       }
-      if (auto && window.viewMode === 'viewer') {
+      if ((auto || reconnected) && window.viewMode === 'viewer') {
         const name = record.label || handles.map(handle => handle.name).join('、');
         const changes = counts && [
           counts.added && '新增 ' + counts.added,
@@ -3284,16 +4249,76 @@ registerPlugin('viewer', {
         const result = changes ? '這次重讀：' + changes + '。' :
           counts ? '自上次開啟後沒有變動。' : '已建立變動比對基準。';
         const unread = Object.keys(chg).length || gone.length ? '目錄已標出異動（按「全部標為已看過」才清除）。' : '';
-        showScanNotice('已從磁碟重新讀取「' + name + '」的 ' + files.length + ' 個檔案。\n' + result + unread);
+        const baselineCount = record.reconnectBaseline
+          ? '原快照：' + record.reconnectBaseline.filter(file => !viewerIgnoresPath(file.path)).length + ' 個檔案。\n' : '';
+        showScanNotice('已從磁碟重新讀取「' + name + '」的 ' + files.length + ' 個檔案。\n' + baselineCount + result + unread);
       }
-      record.cached = await captureTextSnapshot(entries);
-      if (version !== loadVersion) return;
       saveRecent(record);
+    }
+
+    async function scanRecentChanges(record, badge) {
+      if (!record.snapshot || start.hidden || content.hidden || window.viewMode !== 'viewer') return;
+      const version = loadVersion;
+      const entries = [];
+      const skipped = [];
+      const directories = new Set();
+      const roots = new Set();
+      for (const handle of record.handles) {
+        await readHandle(handle, '', entries, skipped, directories, uniqueRootName(handle.name, roots));
+        if (version !== loadVersion || !badge.isConnected || start.hidden || window.viewMode !== 'viewer') return;
+      }
+      if (skipped.length) return;
+      const baseline = record.reconnectBaseline ?? record.snapshot;
+      const files = await fileIndex(entries);
+      if (version !== loadVersion || !badge.isConnected || start.hidden || window.viewMode !== 'viewer') return;
+      const { counts } = viewerDiffIndex(baseline, files, Date.now());
+      updateRecentChangeBadge(badge, counts);
+    }
+
+    const recentBadgeAnimations = new WeakMap();
+    const recentChangeCounts = new Map();
+    const recentPermissionStates = new Map();
+    const recentPermissionLabels = {
+      granted: '已授權，可以直接開啟',
+      denied: '授權已被拒絕，可重新選擇資料夾',
+      prompt: '開啟時需要授權',
+      invalid: '憑證無法使用，可重新選擇資料夾'
+    };
+
+    function updateRecentChangeBadge(badge, counts, animate = true) {
+      const { added, modified, removed } = counts;
+      const total = added + modified + removed;
+      const previous = recentChangeCounts.get(badge.dataset.countKey)?.total ?? 0;
+      recentChangeCounts.set(badge.dataset.countKey, { counts, total });
+      badge.hidden = !total;
+      badge.title = '未讀異動：新增 ' + added + '、修改 ' + modified + '、刪除 ' + removed;
+      badge.setAttribute('aria-label', badge.title);
+      const active = recentBadgeAnimations.get(badge);
+      if (!total || !animate) {
+        active?.reset();
+        recentBadgeAnimations.delete(badge);
+        badge.textContent = total ? total.toLocaleString('en-US') : '';
+      } else if (previous !== total && active) {
+        active.update(total);
+      } else if (previous !== total && typeof window.CountUp === 'function') {
+        const animation = new window.CountUp(badge, previous, total, 0, 2.5, {
+          useEasing: true,
+          useGrouping: true,
+          separator: ','
+        });
+        recentBadgeAnimations.set(badge, animation);
+        animation.start();
+      } else if (!active) {
+        badge.textContent = total.toLocaleString('en-US');
+      }
     }
 
     function renderRecents(records) {
       const recent = content.querySelector('.viewer-recents');
       const list = recent.querySelector('.viewer-recent-list');
+      for (const badge of list.querySelectorAll('.rc-change-count')) {
+        recentBadgeAnimations.get(badge)?.reset();
+      }
       list.replaceChildren();
       const labels = records.map(record => record.label || record.handles.map(handle => handle.name).join('、'));
       const labelCounts = new Map();
@@ -3336,27 +4361,43 @@ registerPlugin('viewer', {
           hint,
           record.savedAt ? new Date(record.savedAt).toLocaleString('zh-TW') : '',
         ].filter(Boolean).join(' · ') || '開啟後更新檔案資訊';
+        if (record.reconnectBaseline) {
+          const baselineCount = record.reconnectBaseline.filter(file => !viewerIgnoresPath(file.path)).length;
+          meta.textContent += ' · 比對基準 ' + baselineCount + ' 個檔案';
+        }
         meta.title = meta.textContent;
+        const cardKey = JSON.stringify([AccountStorage.localScope(), AccountStorage.isLocked(), viewerSourceKey(record)]);
         const permission = document.createElement('span');
         permission.className = 'rc-perm';
-        permission.textContent = record.cached?.length ? '文字快照，可離線開啟' : '沒有可用的授權或文字快照';
+        let reconnect;
+        const setPermissionState = state => {
+          if (permission.dataset.state === state) return;
+          permission.dataset.state = state;
+          permission.textContent = recentPermissionLabels[state];
+          if (reconnect) reconnect.hidden = state === 'granted';
+        };
         if (record.handles.length) {
-          permission.textContent = '確認授權狀態…';
+          const previousState = recentPermissionStates.get(cardKey);
+          if (previousState) setPermissionState(previousState);
+          else permission.textContent = '確認授權狀態…';
           Promise.all(record.handles.map(async handle => handle.queryPermission({ mode: 'read' })))
             .then(states => {
+              if (!badge.isConnected) return;
               const state = states.every(value => value === 'granted') ? 'granted' :
                 states.includes('denied') ? 'denied' : 'prompt';
-              permission.dataset.state = state;
-              permission.textContent = {
-                granted: '已授權，可以直接開啟',
-                denied: '授權已被拒絕，可重新選擇資料夾',
-                prompt: '開啟時需要授權',
-              }[state];
+              recentPermissionStates.set(cardKey, state);
+              setPermissionState(state);
+              if (state === 'granted') scanRecentChanges(record, badge).catch(console.warn);
+              else updateRecentChangeBadge(badge, stored);
             })
             .catch(() => {
-              permission.dataset.state = 'invalid';
-              permission.textContent = '憑證無法使用，可重新選擇資料夾';
+              if (!badge.isConnected) return;
+              recentPermissionStates.set(cardKey, 'invalid');
+              setPermissionState('invalid');
             });
+        } else {
+          recentPermissionStates.delete(cardKey);
+          permission.textContent = (record.cached?.length || record.textEnvelope) ? '文字快照，可離線開啟' : '沒有可用的授權或文字快照';
         }
         const initial = document.createElement('span');
         initial.className = 'rc-initial';
@@ -3365,11 +4406,40 @@ registerPlugin('viewer', {
         initial.textContent = first?.toLocaleUpperCase() || '·';
         const details = document.createElement('span');
         details.className = 'rc-details';
-        details.append(title, location, meta, permission);
+        const heading = document.createElement('span');
+        heading.className = 'rc-heading';
+        heading.append(title);
+        const added = files?.filter(file => file.ch?.k === 'new').length ?? 0;
+        const modified = files?.filter(file => file.ch?.k === 'mod').length ?? 0;
+        const deleted = record.snapshot?.gone?.filter(file => !viewerIgnoresPath(file.path)).length ?? 0;
+        const badge = document.createElement('span');
+        badge.className = 'rc-change-count';
+        badge.dataset.countKey = cardKey;
+        const previous = recentChangeCounts.get(badge.dataset.countKey);
+        const stored = { added, modified, removed: deleted };
+        updateRecentChangeBadge(badge, previous && record.handles.length ? previous.counts : stored, !previous);
+        heading.append(badge);
+        details.append(heading, location, meta, permission);
         button.append(initial, details);
         button.addEventListener('click', () => openRecent(record));
         const row = document.createElement('div');
         row.className = 'rc';
+        if (AccountStorage.isActive() && record.snapshot) {
+          row.dataset.reconnectRecent = record.id;
+          const roots = viewerRecentRoots(record);
+          if (roots.length === 1 && typeof window.showDirectoryPicker === 'function') {
+            if (!record.handles.length) permission.textContent = '尚未連結原資料夾 · 可離線開啟';
+            reconnect = document.createElement('button');
+            reconnect.hidden = record.handles.length > 0 && (!permission.dataset.state || permission.dataset.state === 'granted');
+            reconnect.type = 'button';
+            reconnect.className = 'rc-reconnect';
+            reconnect.textContent = '重新連結';
+            reconnect.setAttribute('aria-label', '重新連結原資料夾 ' + name);
+            reconnect.addEventListener('click', () => reconnectRecent(record, reconnect));
+          } else {
+            permission.textContent += ' · 可拖入原資料夾重新連結';
+          }
+        }
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'rc-x';
@@ -3392,6 +4462,7 @@ registerPlugin('viewer', {
           }
         });
         row.append(button, remove);
+        if (reconnect) row.append(reconnect);
         list.appendChild(row);
       }
       const hasRecords = records.length > 0;
@@ -3433,7 +4504,12 @@ registerPlugin('viewer', {
         if (typeof readViewerArchive !== 'function') throw new Error('無法載入壓縮檔讀取元件。');
         const { entries, directories } = await readViewerArchive(file);
         if (version !== loadVersion) return;
-        const record = createSource(entries, [], directories);
+        const record = await createSource(entries, [], directories);
+        if (version !== loadVersion) return;
+        record.captureMode = await chooseCaptureMode();
+        if (!record.captureMode || version !== loadVersion) return;
+        if (record.captureMode === 'text') record.cached = await captureTextWithProgress(entries);
+        if (version !== loadVersion) return;
         activeRecent = undefined;
         showFiles(entries, 0, [], viewerSourceKey(record), directories);
         rememberSource(entries, record).catch(console.warn);
@@ -3456,25 +4532,56 @@ registerPlugin('viewer', {
     }
 
     const isFileDrag = event => Array.from(event.dataTransfer.types).includes('Files');
+    const recentDropCard = target => target?.closest?.('.viewer-recent-list .rc') ?? null;
+    const reconnectDropCard = target => AccountStorage.localScope()
+      ? recentDropCard(target)?.closest('[data-reconnect-recent]') ?? null : null;
+    let highlightedDropCard = null;
+
+    function highlightDropTarget(card, active) {
+      if (highlightedDropCard !== card) {
+        highlightedDropCard?.classList.remove('rc-drop-target');
+        card?.classList.add('rc-drop-target');
+        highlightedDropCard = card;
+      }
+      content.classList.toggle('viewer-dragging', active && !card);
+    }
+
     content.addEventListener('dragover', event => {
       if (!isFileDrag(event)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'copy';
-      content.classList.add('viewer-dragging');
+      highlightDropTarget(recentDropCard(event.target), true);
     });
     content.addEventListener('dragleave', event => {
-      if (!content.contains(event.relatedTarget)) content.classList.remove('viewer-dragging');
+      if (!content.contains(event.relatedTarget)) highlightDropTarget(null, false);
+      else highlightDropTarget(recentDropCard(event.relatedTarget), true);
     });
     content.addEventListener('drop', async event => {
-      content.classList.remove('viewer-dragging');
+      highlightDropTarget(null, false);
       if (!isFileDrag(event)) return;
       event.preventDefault();
       const version = ++loadVersion;
+      const scope = AccountStorage.localScope();
+      const reconnectId = reconnectDropCard(event.target)?.dataset.reconnectRecent;
       const sources = Array.from(event.dataTransfer.items)
         .filter(item => item.kind === 'file')
         .map(captureDropItem);
       if (!sources.length) {
         for (const file of event.dataTransfer.files) sources.push({ file });
+      }
+      if (reconnectId) {
+        try {
+          const handles = await Promise.all(sources.map(source => source.handleRequest));
+          if (version !== loadVersion || AccountStorage.localScope() !== scope) return;
+          if (!handles.length || handles.some(handle => handle?.kind !== 'directory')) {
+            showToast('拖曳沒有提供資料夾授權，請用卡片上的「重新連結」選擇資料夾。');
+            return;
+          }
+          await connectRecent(reconnectId, handles, scope, version);
+        } catch (error) {
+          if (AccountStorage.localScope() === scope) showToast('無法重新連結資料夾：' + error.message);
+        }
+        return;
       }
       const archive = sources.length === 1 && sources[0].file;
       if (archive && typeof viewerArchivePattern !== 'undefined' && viewerArchivePattern.test(archive.name)) {
@@ -3512,28 +4619,45 @@ registerPlugin('viewer', {
         activeRecent = undefined;
         const completeFolderGroup = folders.length === sources.length;
         const handles = completeFolderGroup ? folders : [];
-        const record = createSource(entries, handles, directories);
+        const record = await createSource(entries, handles, directories);
+        if (version !== loadVersion) return;
         let gone = [];
         if (handles.length) {
           const records = await accessRecents().catch(() => []);
           const previous = await findViewerSource(records, handles);
           if (version !== loadVersion) return;
+          if (!previous && scope && records.some(item => item.snapshot && item.label === record.label)) {
+            showToast('已讀取為新來源。要接回舊快照，請將資料夾拖到對應卡片上。');
+          }
           if (previous) {
+            await hydrateRecentText(previous);
+            if (version !== loadVersion) return;
             const previousKey = viewerSourceKey(previous);
             record.id = previous.id;
+            record.captureMode = previous.captureMode ?? (previous.cached?.some(item => item.file instanceof Blob) ? 'text' : undefined);
+            record.updatedAt = viewerSnapshotUpdatedAt(previous, record.snapshot.files, directories, record.savedAt);
             const session = readSessionValue('site-viewer-session:' + previousKey);
             if (previousKey !== record.id && session) {
               writeSessionValue('site-viewer-session:' + record.id, session);
             }
             if (previous.snapshot) {
-              const diff = viewerDiffIndex(previous.snapshot, record.snapshot.files, Date.now());
+              if (previous.reconnectBaseline) record.reconnectBaseline = previous.reconnectBaseline;
+              const diff = viewerDiffIndex(record.reconnectBaseline ?? previous.snapshot, record.snapshot.files, Date.now());
               gone = diff.gone;
+              if (record.captureMode === 'text') record.baselineCached = retainBaselineText(previous, diff.chg, gone);
               record.snapshot.gone = gone;
               for (const file of record.snapshot.files) if (diff.chg[file.path]) file.ch = diff.chg[file.path];
               for (const entry of entries) entry.change = diff.chg[entry.path];
             }
           }
         }
+        const firstCapture = !record.captureMode;
+        if (firstCapture) record.captureMode = await chooseCaptureMode();
+        if (!record.captureMode || version !== loadVersion) return;
+        if (record.captureMode === 'text') {
+          record.cached = await (firstCapture ? captureTextWithProgress(entries) : captureTextSnapshot(entries));
+        }
+        if (version !== loadVersion) return;
         showFiles(entries, skipped.length, gone, viewerSourceKey(record), directories);
         rememberSource(entries, record).catch(console.warn);
       } else if (skipped.length || !sources.length) {
@@ -3581,7 +4705,6 @@ registerPlugin('viewer', {
           activeRecent = undefined;
           const entries = Array.from(picker.files, file => ({ path: file.webkitRelativePath || file.name, file }))
             .filter(({ path }) => !viewerIgnoresPath(path));
-          showFiles(entries, 0, [], viewerSourceKey({ handles: [], label: sourceLabel(entries) }));
           const directories = new Set();
           for (const { path } of entries) {
             const parts = path.split('/');
@@ -3589,7 +4712,15 @@ registerPlugin('viewer', {
               directories.add(parts.slice(0, depth).join('/'));
             }
           }
-          rememberSource(entries, createSource(entries, [], directories)).catch(console.warn);
+          createSource(entries, [], directories).then(async record => {
+            if (version !== loadVersion) return;
+            record.captureMode = await chooseCaptureMode();
+            if (!record.captureMode || version !== loadVersion) return;
+            if (record.captureMode === 'text') record.cached = await captureTextWithProgress(entries);
+            if (version !== loadVersion) return;
+            showFiles(entries, 0, [], viewerSourceKey(record), directories);
+            return rememberSource(entries, record);
+          }).catch(console.warn);
         } else {
           openArchive(file, version);
         }
@@ -3689,12 +4820,28 @@ registerPlugin('viewer', {
       delay: 500,
       maxDisplay: 99,
       children: [
-        { label: '切換只看異動', icon: resolveIcon('changeFilter'), open: () => { revealChangePanel(); toggleChangesOnly(); } },
+        {
+          label: '切換只看異動',
+          icon: resolveIcon('changeFilter'),
+          receivesParentCount: true,
+          showCount: () => window.plugins['viewer-changes'].showCount(),
+          open: () => { revealChangePanel(); toggleChangesOnly(); }
+        },
         { label: '上一個異動（Shift+F8）', icon: resolveIcon('changePrevious'), open: () => { revealChangePanel(); jumpChange(-1); } },
         { label: '下一個異動（F8）', icon: resolveIcon('changeNext'), open: () => { revealChangePanel(); jumpChange(1); } },
         { label: '全部標為已看過', icon: resolveIcon('changeMarkAll'), open: () => { revealChangePanel(); confirmMarkAllChangesSeen(); } }
       ],
     });
+
+    function refreshHomeRecents() {
+      if (!initialized || start.hidden || window.viewMode !== 'viewer') return;
+      const version = loadVersion;
+      accessRecents().then(records => {
+        if (version === loadVersion && !start.hidden && window.viewMode === 'viewer') renderRecents(records);
+      }).catch(console.warn);
+    }
+
+    window.addEventListener('focus', refreshHomeRecents);
 
     function goHome() {
       changePanelOpened = false;
@@ -3708,7 +4855,9 @@ registerPlugin('viewer', {
       status.textContent = '';
       status.hidden = true;
       start.hidden = false;
+      refreshHomeRecents();
 	  window.plugins.viewer.currentAction = 'home';
+      window.plugins.viewer.guestDiff?.syncVisibility();
 	  if (typeof renderToolbar === 'function') renderToolbar();
     }
 
@@ -3728,9 +4877,10 @@ registerPlugin('viewer', {
     }).observe(content, { attributes: true, attributeFilter: ['style'] });
 
     this.render = (wrapper) => {
-      content.classList.remove('viewer-dragging');
+      highlightDropTarget(null, false);
       content.style.display = '';
       wrapper.appendChild(content);	
+      this.guestDiff?.syncVisibility();
       if (!initialized) {
         initialized = true;
         accessRecents().then(records => {
@@ -3741,11 +4891,54 @@ registerPlugin('viewer', {
             return openRecent(record, true);
           }
         }).catch(console.warn);
-		
-		
+      } else {
+        refreshHomeRecents();
       }
     };
 
+    this.guestDiff = GuestDiffCollection.create({ mode: 'viewer', isAvailable: () => this.currentAction === 'home' && workspace.hidden,
+      readSources: async () => [{ key: 'viewer-recent-folders', source: 'indexeddb:site-viewer', items: JSON.parse(await this.readLegacyRecents()) }],
+      removeOriginals: contents => new Promise((resolve, reject) => {
+        const request = indexedDB.open('site-viewer', 1);
+        request.onupgradeneeded = () => request.result.createObjectStore('settings');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result, transaction = db.transaction('settings', 'readwrite'), store = transaction.objectStore('settings');
+          for (const key of ['recent-folders', 'guest-recent-folders']) {
+            const read = store.get(key);
+            read.onsuccess = () => {
+              const records = normalizeViewerRecents(read.result);
+              store.put(records.filter(record => !contents.has(GuestDiffData.content('viewer-recent-folders', record))), key);
+            };
+          }
+          transaction.oncomplete = () => { db.close(); resolve(); };
+          transaction.onabort = () => { db.close(); reject(transaction.error); };
+        };
+      }),
+      reload: async () => renderRecents(await accessRecents()),
+      renderTile(target, { item }) {
+        const icon = document.createElement('span'); icon.innerHTML = resolveIcon('folder');
+        const title = document.createElement('h3'); title.textContent = item.label || '資料夾快照';
+        const files = (item.snapshot?.files ?? []).filter(file => !viewerIgnoresPath(file.path));
+        const directories = new Set((item.directories ?? []).filter(path => !viewerIgnoresPath(path)));
+        for (const { path } of files) {
+          const parts = path.split('/');
+          for (let depth = 2; depth < parts.length; depth++) {
+            directories.add(parts.slice(0, depth).join('/'));
+          }
+        }
+        const folderCount = [...directories].filter(path => path.includes('/')).length;
+        const meta = document.createElement('p');
+        meta.textContent = folderCount + ' 個資料夾，' + files.length + ' 個檔案';
+        target.append(icon, title, meta);
+      },
+      renderDetail(target, { item }) {
+        const description = document.createElement('p'); description.textContent = '資料夾清單快照（不含資料夾存取權限）'; target.append(description);
+        const files = item.snapshot?.files ?? [];
+        const pre = document.createElement('pre'); pre.textContent = files.map(file => file.path).join('\n') || (item.directories ?? []).join('\n') || item.label;
+        target.classList.add('guest-diff-native-content'); target.append(pre);
+      }
+    });
 	return content;
   },
 });

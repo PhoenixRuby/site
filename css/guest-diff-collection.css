@@ -1,0 +1,20 @@
+.guest-collection-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(240px,100%),1fr)); gap:10px; }
+.guest-collection-tile { min-width:0; padding:12px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); cursor:pointer; overflow-wrap:anywhere; }
+.guest-collection-tile.is-selected { outline:2px solid #f59e0b; outline-offset:-2px; }
+.guest-collection-tile.is-viewing, .guest-collection-tile:focus-visible { border-color:var(--accent); }
+.guest-collection-tile h3 { margin:8px 0; font-size:14px; line-height:1.4; }
+.guest-collection-tile p { margin:6px 0 0; color:var(--muted); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.guest-collection-tile img, .guest-collection-tile canvas { display:block; max-width:100%; max-height:140px; margin:auto; object-fit:contain; }
+.guest-collection-tile > span [data-svgicon] { width:40px; height:40px; color:var(--accent); }
+.guest-collection-detail { padding:16px; overflow-wrap:anywhere; }
+.guest-collection-detail h3 { margin:0 0 16px; color:var(--text); font-size:20px; line-height:1.4; }
+.guest-collection-detail img, .guest-collection-detail canvas { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:6px; }
+.guest-collection-detail pre { overflow:auto; padding:12px; background:var(--surface2); border:1px solid var(--border); border-radius:7px; white-space:pre; }
+.guest-collection-detail dl { margin:12px 0; font-size:13px; }
+.guest-collection-detail dt { margin-top:12px; color:var(--muted); }
+.guest-collection-detail dd { margin:4px 0 0; white-space:pre-wrap; }
+.guest-collection-detail footer { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
+.guest-collection-menu { position:fixed; z-index:11000; display:flex; flex-direction:column; padding:5px; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:0 6px 24px #0004; }
+.guest-collection-menu button { padding:8px 14px; border:0; border-radius:5px; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
+.guest-collection-menu button:hover, .guest-collection-menu button:focus-visible { background:var(--surface2); color:var(--accent); }
+.guest-collection-menu button:disabled { opacity:.5; cursor:default; }

@@ -90,6 +90,16 @@
               <button type="button" class="setting-theme" data-theme="dark">${svg('moon')}<span>暗色</span></button>
             </div>
           </section>
+          <section class="setting-section" aria-labelledby="settingStorageTitle">
+            <div class="setting-row">
+              <div class="setting-section-title">
+                <span id="settingStorageTitle">本機儲存空間</span>
+                <small>目前站台共用的估計用量與配額</small>
+              </div>
+              <button type="button" class="setting-segment setting-storage-refresh">重新查詢</button>
+            </div>
+            <p class="setting-storage-status" role="status">讀取中…</p>
+          </section>
         </div>
         <footer class="app-dialog-footer">
           <span class="setting-unsaved" aria-live="polite"></span>
@@ -100,6 +110,38 @@
     const title = bg.querySelector('#tbSettingsTitle');
     const unsaved = bg.querySelector('.setting-unsaved');
     const apply = bg.querySelector('.setting-apply');
+    const storageStatus = bg.querySelector('.setting-storage-status');
+    const refreshStorage = bg.querySelector('.setting-storage-refresh');
+
+    function formatStorageSize(bytes) {
+      const gib = bytes >= 2 ** 30;
+      return (bytes / (gib ? 2 ** 30 : 2 ** 20)).toLocaleString('zh-TW', { maximumFractionDigits: 2 }) +
+        (gib ? ' GiB' : ' MiB');
+    }
+
+    async function showStorageEstimate() {
+      if (typeof navigator.storage?.estimate !== 'function') {
+        storageStatus.textContent = '目前瀏覽器無法提供站台儲存估計值。';
+        refreshStorage.disabled = true;
+        return;
+      }
+      refreshStorage.disabled = true;
+      storageStatus.textContent = '讀取中…';
+      try {
+        const { usage, quota } = await navigator.storage.estimate();
+        const used = Number.isFinite(usage) ? formatStorageSize(usage) : '未知';
+        const limit = Number.isFinite(quota) ? formatStorageSize(quota) : '未知';
+        storageStatus.textContent = '已使用 ' + used + '，站台配額 ' + limit;
+      } catch {
+        storageStatus.textContent = '無法取得站台儲存估計值，可重新查詢。';
+      } finally {
+        refreshStorage.disabled = false;
+      }
+    }
+
+    refreshStorage.addEventListener('click', showStorageEstimate);
+    void showStorageEstimate();
+
 
     function sync() {
       bg.querySelectorAll('[data-pos]').forEach(btn => {

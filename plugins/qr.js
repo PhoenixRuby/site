@@ -546,6 +546,26 @@ registerPlugin('qr', {
       contentEl.style.display = '';
       wrapper.appendChild(contentEl);
       renderGallery();
+      self.guestDiff?.syncVisibility();
     };
+    self.guestDiff = GuestDiffCollection.create({ mode: 'qr', reload: () => self.render(document.getElementById('app-content')),
+      renderTile(target, { item }) {
+        if (item.image) { const image = document.createElement('img'); image.src = item.image; image.alt = ''; target.append(image); }
+        const title = document.createElement('h3'); title.textContent = item.name || '未命名 QR Code';
+        const text = document.createElement('p'); text.textContent = item.text.slice(0, 160); target.append(title, text);
+      },
+      renderDetail(target, { item }, update) {
+        if (item.image) { const image = document.createElement('img'); image.src = item.image; image.alt = item.name || 'QR Code'; image.onload = () => update?.(); target.append(image); }
+        else {
+          const preview = document.createElement('div'); preview.className = 'guest-qr-preview'; target.append(preview);
+          library('QRCode').then(() => {
+            if (!target.contains(preview)) return;
+            new QRCode(preview, { text: item.text, width: 256, height: 256, correctLevel: QRCode.CorrectLevel.H }); update?.();
+          }).catch(() => { preview.textContent = '無法產生 QR Code 預覽'; update?.(); });
+        }
+        const text = document.createElement('pre'); text.textContent = item.text;
+        target.classList.add('guest-diff-native-content'); target.append(text);
+      }
+    });
   }
 });

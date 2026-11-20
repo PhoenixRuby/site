@@ -420,9 +420,25 @@ registerPlugin('network', {
     /* ── 12. Full-page render ──────────────────────────────── */
     var ncContentEl = document.getElementById('ncContent');
     this.render = (wrapper) => {
+      psList = self.loadData('requestCollector_ps');
+      bashList = self.loadData('requestCollector_bash');
       renderAll();
       ncContentEl.style.display = 'flex';
       wrapper.appendChild(ncContentEl);
+      self.guestDiff?.syncVisibility();
     };
+    self.guestDiff = GuestDiffCollection.create({ mode: 'network', reload: () => self.render(document.getElementById('app-content')),
+      renderTile(target, { key, item }) {
+        const title = document.createElement('h3'); title.textContent = (key.endsWith('_ps') ? 'PowerShell' : 'Bash / cURL') + ' · ' + (detectMethod(item) || '請求');
+        const command = document.createElement('p'); command.textContent = item.split('\n')[0].slice(0, 160); target.append(title, command);
+      },
+      renderDetail(target, { key, item }, update) {
+        const kind = document.createElement('p'); kind.textContent = (key.endsWith('_ps') ? 'PowerShell' : 'Bash / cURL') + ' · ' + (detectMethod(item) || '請求');
+        const pre = document.createElement('pre'), code = document.createElement('code'); code.textContent = item;
+        code.className = 'language-' + (key.endsWith('_ps') ? 'powershell' : 'bash'); pre.append(code);
+        target.classList.add('guest-diff-native-content'); target.append(kind, pre);
+        library('hljs').then(() => { if (target.contains(code)) { hljs.highlightElement(code); update?.(); } }).catch(() => {});
+      }
+    });
   }
 });

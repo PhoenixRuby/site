@@ -316,17 +316,17 @@ registerModal('chat', {
     const clone = o => JSON.parse(JSON.stringify(o));
     function loadProfiles() {
       try {
-        const saved = JSON.parse(localStorage.getItem(CHAT_CONFIG_KEY));
+        const saved = JSON.parse(AccountStorage.getItem(CHAT_CONFIG_KEY));
         if (saved && Array.isArray(saved.profiles) && saved.profiles.length) {
           const profiles = saved.profiles.map(p => ({...DEFAULT_CARD, ...p, timestamp:''}));
           return {profiles, selectedId:profiles.some(p=>p.id===saved.selectedId)?saved.selectedId:profiles[0].id};
         }
       } catch(e) { console.warn('卡片設定讀取失敗',e); }
       let oldDevice = {};
-      try { oldDevice = JSON.parse(localStorage.getItem(CHAT_DEVICE_KEY)) || {}; } catch {}
+      try { oldDevice = JSON.parse(AccountStorage.getItem(CHAT_DEVICE_KEY)) || {}; } catch {}
       let oldEnv = null;
-      try { oldEnv = JSON.parse(localStorage.getItem(LEGACY_ENV_KEY)); } catch {}
-      const oldAuto = localStorage.getItem('chat_auto_timestamp') !== 'false';
+      try { oldEnv = JSON.parse(AccountStorage.getItem(LEGACY_ENV_KEY)); } catch {}
+      const oldAuto = AccountStorage.getItem('chat_auto_timestamp') !== 'false';
       if (oldEnv && Array.isArray(oldEnv.profiles) && oldEnv.profiles.length) {
         const profiles = oldEnv.profiles.map(p => ({...DEFAULT_CARD,...oldDevice,...p, id:p.id||uid(), label:p.label||'未命名設定', timestamp:'', autoTimestamp:oldAuto}));
         return {profiles, selectedId:profiles.some(p=>p.id===oldEnv.selectedId)?oldEnv.selectedId:profiles[0].id};
@@ -355,7 +355,7 @@ registerModal('chat', {
     document.addEventListener('keydown', e=>{if(e.key==='Escape')closeMenu();});
     function persistProfiles() {
       const saved = {...environmentData, profiles:environmentData.profiles.map(p=>({...p,timestamp:''}))};
-      try {localStorage.setItem(CHAT_CONFIG_KEY,JSON.stringify(saved));}
+      try {AccountStorage.setItem(CHAT_CONFIG_KEY,JSON.stringify(saved));}
       catch(e){alert('設定無法儲存：'+e.message);}
     }
     // 將金鑰移到左側，與其他卡片設定放在一起。

@@ -27,8 +27,16 @@ registerPlugin('card', {
   getDataCount(key) {
     return this.loadData(key).length;
   },
+  guestReview: {
+    label: '比對本機卡片設定',
+    keys: /^(card_(show_preview|preview_open)|chat_.+|wsl_.+|cicd_.+|guide_.+_v1)$/,
+    groups: ['卡片']
+  },
+  getGuestCount() {
+    return 0;
+  },
   load() {
-	const subCssList = ['card', 'card-export', 'card-import', 'card-totp'];
+	const subCssList = ['card', 'card-export', 'card-import', 'card-totp', 'guest-upload'];
 	const subPlugins = ['card-export', 'card-import', 'card-sort', 'card-totp', 'card-setting', 'card-help'];
 	
 	// 1. 並行（Parallel）載入所有子插件所需的 CSS 樣式表
@@ -69,7 +77,7 @@ registerPlugin('card', {
       
       // ✨ 沒資料時的特殊防呆：複製預設值、寫入儲存區，並回傳
       const initial = JSON.parse(JSON.stringify(defaultData));
-      self.saveData(initial, 'site_data');
+      if (!AccountStorage.isActive() && !AccountStorage.isLocked()) self.saveData(initial, 'site_data');
       return initial;
     }
 
@@ -117,18 +125,709 @@ registerPlugin('card', {
     // ── renderGrid ────────────────────────────────────────────────
     var BROKEN_ICON_SVG = '<svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="var(--text-dim)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".4"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="3" x2="21" y2="21"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
 
-    function renderGrid() {
+    const guestCardReceiptKey = 'guest-card-import-receipts';
+
+    function readArray(value) {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function cardContent(card) {
+      if (card == null || typeof card !== 'object') return JSON.stringify(card);
+      const { id, ...content } = card;
+      return JSON.stringify(content, (_, value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+        return Object.fromEntries(Object.keys(value).sort().map(name => [name, value[name]]));
+      });
+    }
+
+    async function listGuestCards() {
+      if (!AccountStorage.isActive()) return [];
+      const saved = new Set(readArray(AccountStorage.getItem('site_data')).map(cardContent));
+      const receipts = new Set(readArray(AccountStorage.getItem(guestCardReceiptKey)));
+      const candidates = new Map();
+      const legacy = new Map();
+      const guest = new Map();
+      for (const [key, value, source] of AccountStorage.legacyEntries()) {
+        if (key !== 'site_data' && key !== 'card_order') continue;
+        (key === source ? legacy : guest).set(key, value);
+      }
+      for (const source of [legacy, guest]) {
+        const cards = readArray(source.get('site_data'));
+        const order = readArray(source.get('card_order'));
+        const positions = new Set([...order, ...cards.map((_, index) => index + 1)]);
+        for (const position of positions) {
+          if (!Number.isInteger(position) || position < 1 || position > cards.length) continue;
+          const card = cards[position - 1];
+          if (!Array.isArray(card?.itemlist) || !card.itemlist.every(group =>
+            Array.isArray(group?.item) && group.item.every(item => item && typeof item === 'object'))) continue;
+          const content = cardContent(card);
+          if (!saved.has(content)) candidates.set(content, card);
+        }
+      }
+      const encoder = new TextEncoder();
+      const cards = await Promise.all([...candidates].map(async ([content, card]) => {
+        const digest = await crypto.subtle.digest('SHA-256', encoder.encode(content));
+        return { card, fingerprint: btoa(String.fromCharCode(...new Uint8Array(digest))) };
+      }));
+      return cards.filter(({ fingerprint }) => !receipts.has(fingerprint));
+    }
+
+    function adoptGuestCards(fingerprints) {
+      return AccountStorage.updateEntries(async () => {
+        const candidates = await listGuestCards();
+        const selected = candidates.filter(candidate => fingerprints.has(candidate.fingerprint));
+        if (!selected.length || selected.length !== fingerprints.size) return null;
+        const cards = readArray(AccountStorage.getItem('site_data'));
+        const order = new Set(readArray(AccountStorage.getItem('card_order')).filter(position =>
+          Number.isInteger(position) && position >= 1 && position <= cards.length));
+        cards.forEach((_, index) => order.add(index + 1));
+        const receipts = readArray(AccountStorage.getItem(guestCardReceiptKey));
+        const ids = new Set(cards.map(card => card?.id));
+        for (const { card, fingerprint } of selected) {
+          if (card.id != null && ids.has(card.id)) card.id = crypto.randomUUID();
+          ids.add(card.id);
+          cards.push(card);
+          order.add(cards.length);
+          receipts.push(fingerprint);
+        }
+        return [
+          ['site_data', JSON.stringify(cards)],
+          ['card_order', JSON.stringify([...order])],
+          [guestCardReceiptKey, JSON.stringify(receipts)]
+        ];
+      }, { deferDriveSync: true });
+    }
+
+    function removeGuestOriginals(contents) {
+      const existing = new Map(AccountStorage.legacyEntries().map(([, value, source]) => [source, value]));
+      const writes = [];
+      for (const [key, raw] of existing) {
+        if (key !== 'site_data' && key !== 'site-guest:site_data') continue;
+        const cards = JSON.parse(raw);
+        if (!Array.isArray(cards)) continue;
+        const remaining = [];
+        const positions = new Map();
+        cards.forEach((card, index) => {
+          if (contents.has(cardContent(card))) return;
+          remaining.push(card);
+          positions.set(index + 1, remaining.length);
+        });
+        if (remaining.length === cards.length) continue;
+        const orderKey = key.slice(0, -'site_data'.length) + 'card_order';
+        const orderRaw = existing.get(orderKey);
+        const order = orderRaw == null ? [] : JSON.parse(orderRaw);
+        if (!Array.isArray(order)) throw new Error('訪客卡片順序格式不正確。');
+        const remainingOrder = new Set(order.filter(position => positions.has(position)).map(position => positions.get(position)));
+        for (const position of positions.values()) remainingOrder.add(position);
+        writes.push([key, raw, JSON.stringify(remaining)]);
+        if (orderRaw != null) writes.push([orderKey, orderRaw, JSON.stringify([...remainingOrder])]);
+      }
+      const written = [];
+      try {
+        for (const [key, before, after] of writes) {
+          if (localStorage.getItem(key) !== before) throw new Error('訪客資料已變更。');
+          localStorage.setItem(key, after);
+          written.push([key, before, after]);
+        }
+      } catch (error) {
+        for (const [key, before, after] of written.reverse()) {
+          if (localStorage.getItem(key) === after) localStorage.setItem(key, before);
+        }
+        throw error;
+      }
+      return writes.length > 0;
+    }
+
+    const guestPinMarkup = GuestDiffPanel.pinMarkup('card-guest');
+    const guestShell = GuestDiffPanel.createShell({ mode: 'card', noun: '卡片', prefix: 'card-guest',
+      sideHTML: `<div class="card-guest-reader" aria-label="未歸檔卡片內容"></div>
+        <footer class="card-guest-side-footer">${guestPinMarkup}</footer>` });
+    const guestPanel = guestShell.panel;
+    const guestUpload = guestPanel.querySelector('.card-guest-upload');
+    const guestFilters = guestPanel.querySelectorAll('[data-filter]');
+    let guestFilter = 'all';
+    const focusGuestFilter = () => guestPanel.querySelector('[aria-pressed="true"][data-filter]')?.focus();
+    const guestGrid = guestPanel.querySelector('.card-guest-grid');
+    const guestList = guestGrid.parentElement;
+    guestList.style.overscrollBehaviorY = 'contain';
+    const guestEmpty = guestPanel.querySelector('.card-guest-empty');
+    const guestReader = guestPanel.querySelector('.card-guest-reader');
+    const guestSide = guestReader.parentElement;
+    const guestSidePin = guestSide.querySelector('.card-guest-pin input');
+    const guestSideKeep = guestSide.querySelector('.card-guest-keep');
+    const guestSelection = new Set();
+    const removeGuestOriginal = new Set();
+    let guestPreviewRequest = 0;
+    let guestPreviewKey = '';
+    let guestCards = [];
+    const diff = GuestDiffPanel.create({ ...guestShell, mode: 'card', compareClass: 'card-guest-compare',
+      onResize: () => scheduleCardResize(),
+      beforeClose: () => { cancelAnimationFrame(quicksandFrame); cancelAnimationFrame(guestQuicksandFrame); },
+      onClose: () => setGuestCompareLayout(document.getElementById('app-content'), false)
+    });
+    function destroyCompareScrolls() { diff.destroyScrolls(); }
+    function attachCompareScrolls(wrapper, comparing) { if (comparing) diff.attachScrolls(); }
+    this.guestReview.open = async () => {
+      if (window.viewMode !== 'card') return false;
+      if (diff.opened) {
+        closeGuestReview();
+        return true;
+      }
+      await refreshGuestCards();
+      if (window.viewMode !== 'card' || !guestCards.length) return false;
+      const wrapper = document.getElementById('app-content');
+      diff.open(() => { setGuestCompareLayout(wrapper, true); renderGuestGrid(); });
+      return true;
+    };
+
+    function setGuestCompareLayout(wrapper, comparing) {
+      diff.layout(comparing);
+      wrapper.style.overscrollBehaviorY = comparing ? 'contain' : '';
+      const cards = wrapper.querySelectorAll(':scope > .list-container');
+      cancelAnimationFrame(quicksandFrame);
+      cancelAnimationFrame(guestQuicksandFrame);
+      wrapper.style.height = '';
+      if (!comparing) guestGrid.style.height = '';
+      for (const card of cards) {
+        card.style.position = '';
+        card.style.top = '';
+        card.style.left = '';
+      }
+    }
+
+    function closeGuestReview() { diff.close(); }
+    let guestTiles = [];
+    let viewedGuest = null;
+    let viewedGroup = -1;
+    let viewedItem = -1;
+    let selectSideGroup;
+    let archivingGuestCards = false;
+    this.getGuestCount = () => guestCards.length;
+
+    function setGuestPin(fingerprint, pinned) {
+      if (archivingGuestCards || !guestCards.some(entry => entry.fingerprint === fingerprint)) return;
+      if (pinned) guestSelection.add(fingerprint);
+      else {
+        guestSelection.delete(fingerprint);
+        removeGuestOriginal.delete(fingerprint);
+      }
+      updateGuestSelection();
+    }
+
+    function updateGuestKeep(control, fingerprint) {
+      const input = control.querySelector('input');
+      control.hidden = !guestSelection.has(fingerprint);
+      input.checked = !removeGuestOriginal.has(fingerprint);
+      input.disabled = control.hidden || archivingGuestCards;
+    }
+
+    function setGuestKeep(fingerprint, keep) {
+      if (!guestSelection.has(fingerprint) || archivingGuestCards) return;
+      if (keep) removeGuestOriginal.delete(fingerprint);
+      else removeGuestOriginal.add(fingerprint);
+      updateGuestKeep(guestSideKeep, viewedGuest);
+    }
+
+    function updateGuestSelection() {
+      guestUpload.hidden = guestSelection.size === 0;
+      guestUpload.textContent = '上傳至雲端（' + guestSelection.size + '）';
+      guestUpload.disabled = archivingGuestCards;
+      diff.updateFilters(guestCards.length, guestSelection.size, guestFilter);
+      let visibleCount = 0;
+      for (const { tile, fingerprint } of guestTiles) {
+        const selected = guestSelection.has(fingerprint);
+        tile.classList.toggle('is-selected', selected);
+        tile.hidden = guestFilter === 'selected' && !selected ||
+          guestFilter === 'unselected' && selected;
+        if (!tile.hidden) visibleCount++;
+      }
+      guestEmpty.hidden = visibleCount > 0;
+      if (diff.opened) scheduleCardResize();
+      const guestCompareScroll = diff.listScroll;
+      if (guestCompareScroll) {
+        // Clear the old thumb offset so it cannot extend the filtered list.
+        guestCompareScroll.scrollbar.style.top = '0';
+        guestCompareScroll.updateScrollbar();
+      }
+      const previous = viewedGuest;
+      if (!guestTiles.some(entry => entry.fingerprint === viewedGuest && !entry.tile.hidden)) {
+        viewedGuest = null;
+      }
+      if (previous !== viewedGuest) {
+        viewedGroup = -1;
+        viewedItem = -1;
+        const restoreFocus = guestSide.contains(document.activeElement);
+        renderGuestReader();
+        if (restoreFocus) focusGuestFilter();
+      }
+      guestSidePin.checked = guestSelection.has(viewedGuest);
+      guestSidePin.disabled = archivingGuestCards || viewedGuest === null;
+      updateGuestKeep(guestSideKeep, viewedGuest);
+      for (const { tile, fingerprint } of guestTiles) {
+        const current = fingerprint === viewedGuest;
+        tile.classList.toggle('is-viewing', current);
+        highlightGuestTargets(getGuestTargets(tile), current ? viewedGroup : -2, viewedItem);
+        if (current) tile.setAttribute('aria-current', 'true');
+        else tile.removeAttribute('aria-current');
+      }
+      window.niceScroll?.updateScrollbar?.();
+    }
+
+    for (const button of guestFilters) {
+      button.addEventListener('click', () => {
+        guestFilter = button.dataset.filter;
+        updateGuestSelection();
+      });
+    }
+    guestSidePin.addEventListener('change', () => setGuestPin(viewedGuest, guestSidePin.checked));
+    guestSideKeep.querySelector('input').addEventListener('change', event => {
+      setGuestKeep(viewedGuest, event.target.checked);
+    });
+    guestUpload.addEventListener('click', async () => {
+      const drive = window.plugins['google-drive'];
+      if (typeof drive?.uploadGuestCards !== 'function') {
+        showToast('訪客卡片上傳功能尚未載入。');
+        return;
+      }
+      const cards = guestCards.filter(entry => guestSelection.has(entry.fingerprint)).map(entry => entry.card);
+      if (cards.length && !archivingGuestCards) await drive.uploadGuestCards(cards);
+    });
+
+    function archiveGuestSelection() {
+      if (archivingGuestCards || !guestSelection.size || window.viewMode !== 'card') return;
+      const selected = new Set(guestSelection);
+      const removing = guestCards.filter(entry =>
+        selected.has(entry.fingerprint) && removeGuestOriginal.has(entry.fingerprint));
+      const originals = new Set(removing.map(({ card }) => cardContent(card)));
+      const commit = () => void commitGuestArchive(selected, originals);
+      if (removing.length) {
+        const names = removing.map(({ card }) => card.title || '未命名卡片').join('、');
+        confirmAction({
+          message: '確定要歸檔，並移除以下訪客原檔？' + names,
+          confirmText: '歸檔並移除'
+        }, commit);
+        return;
+      }
+      void commit();
+    }
+
+    async function commitGuestArchive(selected, originals) {
+      if (archivingGuestCards || window.viewMode !== 'card') return false;
+      archivingGuestCards = true;
+      updateGuestSelection();
+      try {
+        if (await adoptGuestCards(selected)) {
+          guestSelection.clear();
+          removeGuestOriginal.clear();
+          let cleanupError;
+          if (originals.size) {
+            try {
+              removeGuestOriginals(originals);
+            } catch (error) {
+              cleanupError = error;
+            }
+          }
+          data = loadData();
+          currentOrder = loadOrder();
+          void initModules(data).catch(error => console.warn('卡片模組載入失敗', error));
+          renderToolbar();
+          if (window.viewMode === 'card') renderGrid();
+          showToast(cleanupError ? '卡片已歸檔，訪客原檔清理未完成：' + cleanupError.message :
+            '已歸檔 ' + selected.size + ' 張卡片。');
+          return true;
+        } else {
+          void refreshGuestCards();
+          showToast('未歸檔清單已變更，請確認釘選項目。');
+        }
+      } catch (error) {
+        showToast('卡片歸檔未完成：' + error.message);
+      } finally {
+        archivingGuestCards = false;
+        updateGuestSelection();
+      }
+    }
+
+    function renderGuestCard({ card, fingerprint }) {
+      const tile = renderCard({ ...card, icon: typeof card.icon === 'string' ? card.icon : '' }, true);
+      tile.classList.add('card-guest-tile');
+      tile.style.alignSelf = 'start';
+      tile.style.height = 'auto';
+      tile.tabIndex = 0;
+      tile.setAttribute('aria-label', card.title || '未命名卡片');
+      tile.setAttribute('aria-haspopup', 'menu');
+      const togglePreview = () => {
+        setGuestSideReader(viewedGuest === fingerprint ? null : fingerprint);
+      };
+      bindGuestTargets(getGuestTargets(tile), card, (group, item = -1) => {
+        if (viewedGuest === fingerprint && viewedGroup === group && viewedItem === item) {
+          setGuestSideReader(null);
+          return;
+        }
+        setGuestSideReader(fingerprint);
+        selectSideGroup?.(group, item);
+      });
+      tile.addEventListener('click', togglePreview);
+      tile.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          togglePreview();
+        }
+      });
+      tile.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        const bounds = tile.getBoundingClientRect();
+        const x = event.clientX || bounds.left;
+        const y = event.clientY || bounds.top;
+        showGuestContextMenu(x, y, card, fingerprint, tile);
+      });
+      return { tile, fingerprint };
+    }
+
+    function setGuestSideReader(fingerprint) {
+      if (viewedGuest === fingerprint) return;
+      viewedGuest = fingerprint;
+      viewedGroup = -1;
+      viewedItem = -1;
+      renderGuestReader();
+      updateGuestSelection();
+    }
+
+    function deleteGuestCard(card, fingerprint, tile) {
+      const canDelete = () => !archivingGuestCards && window.viewMode === 'card' &&
+        guestCards.some(entry => entry.fingerprint === fingerprint);
+      if (!canDelete()) return;
+      tile.focus();
+      const title = card.title || '未命名卡片';
+      confirmAction({ message: '確定要刪除訪客原檔「' + title + '」？', confirmText: '刪除' }, async () => {
+        if (!canDelete()) return;
+        try {
+          const removed = removeGuestOriginals(new Set([cardContent(card)]));
+          await refreshGuestCards();
+          if (!guestPanel.hidden) focusGuestFilter();
+          showToast(removed ? '已刪除訪客原檔。' : '訪客原檔已變更，請重新確認。');
+        } catch (error) {
+          tile.focus();
+          showToast('無法刪除訪客原檔：' + error.message);
+        }
+      });
+    }
+
+    function showGuestContextMenu(x, y, card, fingerprint, tile) {
+      removeContextMenu();
+      const menu = document.createElement('div');
+      menu.className = 'card-ctx-menu card-guest-menu';
+      menu.setAttribute('role', 'menu');
+      const actions = [
+        ['釘選', () => {
+          setGuestPin(fingerprint, !guestSelection.has(fingerprint));
+        }, () => guestSelection.has(fingerprint)],
+        ['詳細查看', () => openGuestDialog(card, fingerprint)],
+        ['刪除訪客原檔', () => void deleteGuestCard(card, fingerprint, tile), null, archivingGuestCards]
+      ];
+      const archive = document.createElement('button');
+      archive.type = 'button';
+      archive.setAttribute('role', 'menuitem');
+      const updateArchive = () => {
+        archive.textContent = '歸檔至本機（' + guestSelection.size + '）';
+        archive.hidden = guestSelection.size === 0;
+        archive.disabled = archivingGuestCards;
+      };
+      archive.addEventListener('click', event => {
+        event.stopPropagation();
+        removeContextMenu();
+        tile.focus();
+        void archiveGuestSelection();
+      });
+      for (const [label, action, checked, disabled] of actions) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.setAttribute('role', checked ? 'menuitemcheckbox' : 'menuitem');
+        if (checked) {
+          button.setAttribute('aria-checked', String(checked()));
+        }
+        button.disabled = checked ? archivingGuestCards : Boolean(disabled);
+        button.addEventListener('click', event => {
+          event.stopPropagation();
+          if (!checked) removeContextMenu();
+          action();
+          if (checked) button.setAttribute('aria-checked', String(checked()));
+          updateArchive();
+          if (tile.hidden) {
+            removeContextMenu();
+            focusGuestFilter();
+          }
+        });
+        menu.append(button);
+      }
+      updateArchive();
+      menu.append(archive);
+      menu.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          removeContextMenu();
+          tile.focus();
+        } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          const buttons = [...menu.querySelectorAll('button:not(:disabled):not([hidden])')];
+          const index = buttons.indexOf(document.activeElement);
+          buttons[(index + (event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length].focus();
+        }
+      });
+      mountCardContextMenu(menu, x, y);
+      menu.firstElementChild.focus();
+    }
+
+    function openGuestDialog(card, fingerprint) {
+      const detail = GuestDiffPanel.createDialog({ title: card.title || '未命名卡片',
+        panelClass: 'card-guest-dialog', bodyClass: 'card-guest-dialog-body',
+        bodyHTML: '<div class="card-guest-dialog-preview"></div><div class="card-guest-reader"></div>',
+        footerHTML: guestPinMarkup,
+        restoreFocus: () => {
+          const tile = guestTiles.find(entry => entry.fingerprint === fingerprint)?.tile;
+          if (tile && !tile.hidden) tile.focus(); else focusGuestFilter();
+        }
+      });
+      const dialog = detail.dialog;
+      const pin = dialog.querySelector('.card-guest-pin input');
+      const keep = dialog.querySelector('.card-guest-keep');
+      updateGuestKeep(keep, fingerprint);
+      keep.querySelector('input').addEventListener('change', event => {
+        setGuestKeep(fingerprint, event.target.checked);
+        updateGuestKeep(keep, fingerprint);
+      });
+      pin.checked = guestSelection.has(fingerprint);
+      pin.disabled = archivingGuestCards;
+      pin.addEventListener('change', () => {
+        setGuestPin(fingerprint, pin.checked);
+        pin.checked = guestSelection.has(fingerprint);
+        updateGuestKeep(keep, fingerprint);
+      });
+      const preview = renderCard({ ...card, icon: typeof card.icon === 'string' ? card.icon : '' }, true);
+      dialog.querySelector('.card-guest-dialog-preview').append(preview);
+      const basic = preview.querySelector('.list-icon');
+      const headerIcon = basic.querySelector('.icon-pic').cloneNode(true);
+      headerIcon.classList.add('card-guest-header-icon');
+      headerIcon.setAttribute('aria-hidden', 'true');
+      dialog.querySelector('h2').before(headerIcon);
+      const groupTargets = getGuestTargets(preview);
+      const isViewed = viewedGuest === fingerprint;
+      const selectGroup = fillGuestReader(dialog.querySelector('.card-guest-reader'), card,
+        isViewed ? viewedGroup : -1,
+        (index, itemIndex) => highlightGuestTargets(groupTargets, index, itemIndex),
+        (index, itemIndex) => findGuestTargetItem(groupTargets, index, itemIndex),
+        isViewed ? viewedItem : -1);
+      bindGuestTargets(groupTargets, card, selectGroup);
+      detail.show();
+    }
+
+    function getGuestTargets(preview) {
+      return [preview.querySelector('.list-icon'), ...preview.querySelectorAll('[data-preview-group]')];
+    }
+
+    function findGuestTargetItem(targets, group, item) {
+      return targets[group + 1]?.querySelector(`[data-preview-item="${item}"]`);
+    }
+
+    function highlightGuestTargets(targets, group, item) {
+      targets.forEach((target, position) => {
+        const active = position === group + 1;
+        target.classList.toggle('is-current-group', active);
+        if (position === 0) target.setAttribute('aria-pressed', String(active));
+        target.querySelectorAll('[data-preview-item]').forEach(node => {
+          node.setAttribute('aria-pressed', String(active && Number(node.dataset.previewItem) === item));
+        });
+      });
+    }
+
+    function bindGuestTargets(groupTargets, card, selectGroup) {
+      groupTargets.forEach((target, position) => {
+        target.tabIndex = 0;
+        target.setAttribute('role', position === 0 ? 'button' : 'group');
+        target.setAttribute('aria-label', position === 0
+          ? '卡片基本資料' : card.itemlist[position - 1].name || '未命名群組');
+        bindGuestSelection(target, () => selectGroup(position - 1));
+        target.querySelectorAll('[data-preview-item]').forEach(item => {
+          const itemIndex = Number(item.dataset.previewItem);
+          const kind = item.firstElementChild.dataset.icon;
+          item.tabIndex = 0;
+          item.setAttribute('role', 'button');
+          item.setAttribute('aria-label', guestFieldLabels[kind] || kind);
+          bindGuestSelection(item, () => selectGroup(position - 1, itemIndex));
+        });
+      });
+    }
+
+    function renderGuestReader(animateClose = true) {
+      const card = guestCards.find(entry => entry.fingerprint === viewedGuest)?.card;
+      diff.renderSide(Boolean(card), () => {
+        const tile = guestTiles.find(entry => entry.fingerprint === viewedGuest).tile;
+        const targets = getGuestTargets(tile);
+        selectSideGroup = fillGuestReader(guestReader, card, viewedGroup, (group, item) => {
+          viewedGroup = group;
+          viewedItem = item;
+          highlightGuestTargets(targets, group, item);
+        }, (group, item) => findGuestTargetItem(targets, group, item), viewedItem);
+      }, { animate: animateClose, clear: () => { selectSideGroup = undefined; guestReader.replaceChildren(); } });
+    }
+
+    const guestFieldLabels = {
+      link: '網址', user: '帳號', key: '金鑰', db: '資料庫', ssh: 'SSH',
+      guide: '操作指南', modal: '模組'
+    };
+
+    function bindGuestSelection(target, select) {
+      target.addEventListener('click', event => {
+        event.stopPropagation();
+        select();
+      });
+      target.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        select();
+      });
+    }
+
+    function fillGuestReader(reader, card, group, onGroupChange, findPreviewItem, initialItem = -1) {
+      const sidebar = document.createElement('nav');
+      sidebar.className = 'card-guest-groups';
+      sidebar.setAttribute('aria-label', '卡片內容分組');
+      const content = document.createElement('div');
+      content.className = 'card-guest-preview';
+      if (reader === guestReader) {
+        sidebar.style.overscrollBehaviorY = 'contain';
+        content.style.overscrollBehaviorY = 'contain';
+      }
+      const heading = document.createElement('h4');
+      const fields = document.createElement('dl');
+      content.append(heading, fields);
+      reader.replaceChildren(sidebar, content);
+
+      const groups = ['卡片基本資料', ...card.itemlist.map(group => group.name || '未命名群組')];
+      let currentGroup;
+      const buttons = groups.map((name, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = name;
+        button.addEventListener('click', () => showGroup(index - 1));
+        return button;
+      });
+      sidebar.append(...buttons);
+
+      function showGroup(index, itemIndex = -1) {
+        if (index !== currentGroup) {
+          renderGroup(index);
+          currentGroup = index;
+        }
+        for (const row of fields.querySelectorAll('[data-guest-item]')) {
+          row.setAttribute('aria-pressed', String(Number(row.dataset.guestItem) === itemIndex));
+        }
+        onGroupChange?.(index, itemIndex);
+      }
+
+      function renderGroup(index) {
+        buttons.forEach((button, position) => button.setAttribute('aria-current', String(position === index + 1)));
+        heading.textContent = index < 0 ? groups[0] : '項目：' + groups[index + 1];
+        fields.replaceChildren();
+        const entries = index < 0
+          ? [['名稱', card.title || '未命名卡片'], ['類型', card.type]]
+          : card.itemlist[index].item.flatMap((item, itemIndex) => item._hidden ? [] :
+            Object.entries(item).map(([key, value]) => [key, value, itemIndex]));
+        for (const [key, value, itemIndex] of entries) {
+          if (key === 'totp' || key.startsWith('_') || value == null || value === '') continue;
+          const field = document.createElement('div');
+          const name = document.createElement('dt');
+          name.textContent = Object.hasOwn(guestFieldLabels, key) ? guestFieldLabels[key] : key;
+          const description = document.createElement('dd');
+          description.textContent = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+          field.append(name, description);
+          if (itemIndex !== undefined && findPreviewItem?.(index, itemIndex) &&
+              Object.hasOwn(guestFieldLabels, key)) {
+            field.dataset.guestItem = itemIndex;
+            field.tabIndex = 0;
+            field.setAttribute('role', 'button');
+            bindGuestSelection(field, () => showGroup(index, itemIndex));
+          }
+          fields.append(field);
+        }
+      }
+      showGroup(group, initialItem);
+      return showGroup;
+    }
+
+    function renderGuestGrid() {
+      guestPanel.hidden = !diff.opened || guestCards.length === 0;
+      if (guestPanel.hidden) return;
+      guestTiles = guestCards.map(renderGuestCard);
+      guestGrid.replaceChildren(...guestTiles.map(({ tile }) => tile));
+      updateGuestSelection();
+      if (viewedGuest !== null) renderGuestReader();
+    }
+
+    async function refreshGuestCards() {
+      const request = ++guestPreviewRequest;
+      try {
+        const cards = await listGuestCards();
+        if (request !== guestPreviewRequest || window.viewMode !== 'card') return;
+        const key = cards.map(({ fingerprint }) => fingerprint).join(',');
+        if (key === guestPreviewKey) return;
+        guestPreviewKey = key;
+        const countChanged = guestCards.length !== cards.length;
+        guestCards = cards;
+        const fingerprints = new Set(cards.map(({ fingerprint }) => fingerprint));
+        for (const selected of guestSelection) {
+          if (!fingerprints.has(selected)) {
+            guestSelection.delete(selected);
+            removeGuestOriginal.delete(selected);
+          }
+        }
+        if (!cards.length) guestFilter = 'all';
+        if (countChanged) renderToolbar();
+        if (diff.opened) {
+          diff.opened = cards.length > 0;
+          renderGrid(false);
+        }
+      } catch (error) {
+        console.warn('無法讀取本機未歸檔卡片', error);
+      }
+    }
+
+    window.addEventListener('site-data-saved', () => {
+      if (window.viewMode === 'card') void refreshGuestCards();
+    });
+
+    window.addEventListener('storage', event => {
+      if (window.viewMode === 'card' && (event.key === null ||
+          /^(site-guest:)?(site_data|card_order)$/.test(event.key))) void refreshGuestCards();
+    });
+
+    function renderGrid(refreshGuests = true) {
       if (typeof window.totpBeforeRender === 'function') window.totpBeforeRender();
 
       const wrapper = document.getElementById("app-content");
+      if (window.viewMode === 'card') {
+        if (!guestPanel.isConnected) wrapper.after(guestPanel);
+        if (refreshGuests) void refreshGuestCards();
+      }
+      const comparing = window.viewMode === 'card' && diff.opened && guestCards.length > 0;
+      setGuestCompareLayout(wrapper, comparing);
+      destroyCompareScrolls();
       wrapper.innerHTML = "";
 
       if (data.length === 0) {
-        if (typeof window.totpAfterRender === 'function') window.totpAfterRender();
+        if (window.viewMode === 'card') renderGuestGrid();
+        window.totpAfterRender?.();
         var emptyDiv = document.createElement('div');
         emptyDiv.className = 'card-empty';
         emptyDiv.innerHTML = `<div class="card-empty-icon">${resolveIcon("card", '#38bdf8', 64)}</div><div>尚無卡片</div><div style="font-size:12px;margin-top:4px">點擊工具列 <kbd style="background:var(--surface);border:1px solid var(--border);border-bottom-width:3px;border-radius:4px;padding:1px 6px;font-size:11px;color:var(--text)">+</kbd> 按鈕新增</div><div style="font-size:12px;margin-top:6px;color:var(--text-dim)">或拖曳 JSON 檔至畫面快速匯入</div>`;
         wrapper.appendChild(emptyDiv);
+        attachCompareScrolls(wrapper, comparing);
+        if (comparing) resizeQuicksand("#app-content", "#app-content");
         return;
       }
 
@@ -147,7 +846,9 @@ registerPlugin('card', {
         wrapper.appendChild(container);
       });
 
-      if (typeof window.totpAfterRender === 'function') window.totpAfterRender();
+      if (window.viewMode === 'card') renderGuestGrid();
+      window.totpAfterRender?.();
+      attachCompareScrolls(wrapper, comparing);
       resizeQuicksand("#app-content", "#app-content");
     }
 
@@ -348,53 +1049,95 @@ registerPlugin('card', {
       return container;
     }
 
+    this.renderPreview = card => renderCard(card, true);
+
+    let quicksandFrame;
+    let guestQuicksandFrame;
+
     function resizeQuicksand(parentSelector, targetSelector) {
       const parent = document.querySelector(parentSelector);
       const target = document.querySelector(targetSelector);
-      if (!parent || !target) return;
-      const cards = Array.from(target.querySelectorAll('.list-container'));
-      if (!cards.length) return;
-      const containerRect = target.getBoundingClientRect();
-      const oldRects = cards.map(el => ({
-        top: el.getBoundingClientRect().top - containerRect.top,
-        left: el.getBoundingClientRect().left - containerRect.left,
-        width: el.offsetWidth, height: el.offsetHeight
-      }));
-      const oldHeight = target.offsetHeight;
-      target.style.position = "relative";
-      target.style.height = oldHeight + "px";
-      cards.forEach((el, i) => { const r = oldRects[i]; el.style.position = "absolute"; el.style.top = r.top + "px"; el.style.left = r.left + "px"; });
-      target.style.height = "auto";
-      cards.forEach(el => el.style.position = "");
-      const newRects = cards.map(el => ({
-        top: el.getBoundingClientRect().top - containerRect.top,
-        left: el.getBoundingClientRect().left - containerRect.left
-      }));
-      const newHeight = target.scrollHeight;
-      target.style.height = oldHeight + "px";
-      cards.forEach((el, i) => { const r = oldRects[i]; el.style.position = "absolute"; el.style.top = r.top + "px"; el.style.left = r.left + "px"; });
-      const duration = 600;
-      const start = performance.now();
-      function easeInOutQuart(t) { return t < 0.5 ? 8*t*t*t*t : 1 - Math.pow(-2*t+2, 4)/2; }
-      function animate(now) {
-        const p = Math.min((now - start) / duration, 1);
-        const eased = easeInOutQuart(p);
-        target.style.height = oldHeight + (newHeight - oldHeight) * eased + "px";
-        cards.forEach((el, i) => {
-          const from = oldRects[i], to = newRects[i];
-          el.style.top = from.top + (to.top - from.top) * eased + "px";
-          el.style.left = from.left + (to.left - from.left) * eased + "px";
+      if (window.viewMode !== 'card' || !parent || !target || diff.panelAnimation || diff.closing) return;
+
+      cancelAnimationFrame(quicksandFrame);
+      cancelAnimationFrame(guestQuicksandFrame);
+      const comparing = target.classList.contains('card-guest-compare');
+      quicksandFrame = animateQuicksand(target, ':scope > .list-container', comparing, frame => {
+        quicksandFrame = frame;
+      });
+      if (comparing) {
+        guestQuicksandFrame = animateQuicksand(guestGrid, ':scope > .card-guest-tile:not([hidden])', false, frame => {
+          guestQuicksandFrame = frame;
         });
-        if (p < 1) requestAnimationFrame(animate);
       }
-      requestAnimationFrame(animate);
     }
 
-    var _resizeTimer;
-    window.addEventListener("resize", function() {
-      clearTimeout(_resizeTimer);
-      _resizeTimer = setTimeout(function() { resizeQuicksand("#app-content", "#app-content"); }, 80);
-    });
+    function animateQuicksand(target, selector, fixedHeight, setFrame) {
+      const cards = Array.from(target.querySelectorAll(selector));
+      if (!cards.length) {
+        if (!fixedHeight) target.style.height = '';
+        return;
+      }
+
+      function readPositions() {
+        const origin = target.getBoundingClientRect();
+        return cards.map(card => {
+          const rect = card.getBoundingClientRect();
+          return {
+            top: rect.top - origin.top + target.scrollTop,
+            left: rect.left - origin.left + target.scrollLeft
+          };
+        });
+      }
+
+      const oldRects = readPositions();
+      const oldHeight = target.offsetHeight;
+      const scrollTop = target.scrollTop;
+      target.style.position = 'relative';
+      if (!fixedHeight) target.style.height = 'auto';
+      for (const card of cards) card.style.position = '';
+      const newRects = readPositions();
+      const newHeight = target.scrollHeight;
+      if (!fixedHeight) target.style.height = oldHeight + 'px';
+      for (const card of cards) card.style.position = 'absolute';
+
+      const duration = 600;
+      const start = performance.now();
+      function paint(progress) {
+        const eased = progress < 0.5 ? 8 * progress ** 4 : 1 - (-2 * progress + 2) ** 4 / 2;
+        if (!fixedHeight) target.style.height = oldHeight + (newHeight - oldHeight) * eased + 'px';
+        cards.forEach((card, index) => {
+          const from = oldRects[index];
+          const to = newRects[index];
+          card.style.top = from.top + (to.top - from.top) * eased + 'px';
+          card.style.left = from.left + (to.left - from.left) * eased + 'px';
+        });
+      }
+
+      const moved = newRects.some(({ top, left }, index) =>
+        top !== oldRects[index].top || left !== oldRects[index].left);
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches || (!moved && (fixedHeight || oldHeight === newHeight))) {
+        paint(1);
+        target.scrollTop = scrollTop;
+        return;
+      }
+      // Restore the previous positions before the first paint, including during the resize debounce.
+      paint(0);
+      target.scrollTop = scrollTop;
+      function animate(now) {
+        const progress = Math.min((now - start) / duration, 1);
+        paint(progress);
+        if (progress < 1) setFrame(requestAnimationFrame(animate));
+      }
+      return requestAnimationFrame(animate);
+    }
+
+    let resizeTimer;
+    function scheduleCardResize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => resizeQuicksand('#app-content', '#app-content'), 80);
+    }
+    window.addEventListener('resize', scheduleCardResize);
 
     // ── initModules ───────────────────────────────────────────────
     //function loadModuleScript(name) {
@@ -595,7 +1338,7 @@ registerPlugin('card', {
       data.splice(dataIdx, 1);
       saveData();
       currentOrder = currentOrder.filter(function (i) { return i !== oneBasedIdx; }).map(function (i) { return i > oneBasedIdx ? i - 1 : i; });
-      localStorage.setItem('card_order', JSON.stringify(currentOrder));
+      AccountStorage.setItem('card_order', JSON.stringify(currentOrder));
       renderGrid();
       showToast('卡片已刪除');
     });
@@ -1543,21 +2286,30 @@ registerPlugin('card', {
       }
 
       if (!cardEdited) return;
-      confirmCardSave(describeChanges(card), () => {
-        if (editingIdx !== null) {
-          data[editingIdx] = card;
-          saveData();
-          renderGrid();
-          showToast('卡片已更新');
-        } else {
-          data.push(card);
-          saveData();
-          currentOrder.push(data.length);
-          localStorage.setItem('card_order', JSON.stringify(currentOrder));
-          renderGrid();
-          showToast('卡片已新增');
+      confirmCardSave(describeChanges(card), async () => {
+        const creating = editingIdx === null;
+        const nextData = [...data];
+        if (creating) nextData.push(card);
+        else nextData[editingIdx] = card;
+        const nextOrder = creating ? [...currentOrder, nextData.length] : currentOrder;
+        saveBtn.disabled = true;
+        try {
+          await AccountStorage.saveEntries([
+            ['site_data', JSON.stringify(nextData)],
+            ['card_order', JSON.stringify(nextOrder)]
+          ]);
+        } catch (error) {
+          saveBtn.disabled = false;
+          showToast('卡片未儲存：' + error.message);
+          return;
         }
 
+        data = nextData;
+        currentOrder = nextOrder;
+        if (typeof initModules === 'function') initModules(data);
+        renderToolbar();
+        renderGrid();
+        showToast(creating ? '卡片已新增' : '卡片已更新');
         cardEdited = false;
         clearEdited(titleEl);
         ModalManager.closeDialog(modalBg);
@@ -1583,8 +2335,6 @@ registerPlugin('card', {
 
       var menu = document.createElement('div');
       menu.className = 'card-ctx-menu';
-      menu.style.left = x + 'px';
-      menu.style.top = y + 'px';
 
       var editBtn = document.createElement('button');
       editBtn.textContent = '編輯';
@@ -1609,7 +2359,7 @@ registerPlugin('card', {
         data.push(clone);
         saveData();
         currentOrder.push(data.length);
-        localStorage.setItem('card_order', JSON.stringify(currentOrder));
+        AccountStorage.setItem('card_order', JSON.stringify(currentOrder));
         renderGrid();
         showToast('卡片已複製');
       });
@@ -1631,18 +2381,16 @@ registerPlugin('card', {
         e.stopPropagation();
       });
 
+      mountCardContextMenu(menu, x, y);
+    };
+
+    function mountCardContextMenu(menu, x, y) {
       document.body.appendChild(menu);
       activeMenu = menu;
-
-      // Adjust position if menu goes off-screen
-      var rect = menu.getBoundingClientRect();
-      if (rect.right > window.innerWidth) {
-        menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
-      }
-      if (rect.bottom > window.innerHeight) {
-        menu.style.top = (window.innerHeight - rect.height - 8) + 'px';
-      }
-    };
+      const { width, height } = menu.getBoundingClientRect();
+      menu.style.left = Math.max(0, Math.min(x, window.innerWidth - width - 8)) + 'px';
+      menu.style.top = Math.max(0, Math.min(y, window.innerHeight - height - 8)) + 'px';
+    }
 
     // ── 14. Expose globals ─────────────────────────────────────────
     window.openEditCardModal = openEditModal;

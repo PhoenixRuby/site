@@ -84,6 +84,9 @@ html[data-theme="light"]{--bg:#ffffff;--cardbg:#e8ecf0;--surface:#f5f6f8;--surfa
 #toolbar{position:fixed;display:flex;align-items:center;justify-content:flex-start;gap:6px;z-index:11001;background:var(--surface)}
 #toolbar button{min-width:36px;height:36px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-dim);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background .15s,color .15s,border-color .15s;position:relative;padding:0 6px}
 #toolbar .tb-spacer{flex:1}
+#toolbar .google-drive-avatar{position:relative;display:inline-grid;place-items:center;width:24px;height:24px;flex:none;overflow:hidden;border-radius:50%;background:#345b94;color:#fff;line-height:1}
+#toolbar .google-drive-avatar img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover}
+#toolbar:not(.show-labels) button:has(> .google-drive-avatar){padding-inline:5px}
 #toolbar.tb-right .tb-spacer,#toolbar.tb-left .tb-spacer{border-bottom:1px solid var(--border);margin:4px 6px;min-height:0}
 #toolbar.tb-top .tb-spacer,#toolbar.tb-bottom .tb-spacer{border-left:1px solid var(--border);margin:6px 4px;min-width:0}
 #toolbar .tb-spacer-clean{border:none !important;margin:0 !important}
@@ -145,7 +148,8 @@ body.tb-bottom{padding-bottom:48px}
 
 /* Toolbar 共用數量徽標：加入既有 base.css */
 #toolbar > button { position: relative; }
-#toolbar .tb-count{position: absolute;top: -5px;right: -6px;min-width: 17px;height: 17px;padding: 0 4px;box-sizing: border-box;border-radius: 999px;background: #dc3545;color: #fff;font-size: 10px;font-weight: 700;line-height: 17px;text-align: center;pointer-events: none;white-space: nowrap}
+#toolbar .tb-count, .tb-submenu .tb-count{position: absolute;top: -5px;right: -6px;min-width: 17px;height: 17px;padding: 0 4px;box-sizing: border-box;border-radius: 999px;background: #dc3545;color: #fff;font-size: 10px;font-weight: 700;line-height: 17px;text-align: center;pointer-events: none;white-space: nowrap}
+#toolbar .tb-submenu-count-open > .tb-count{display:none}
 #toolbar .tb-count:empty {
     display: none;
 }
@@ -159,6 +163,7 @@ body.tb-bottom{padding-bottom:48px}
 .tb-submenu .tb-submenu-item:disabled{opacity:.45;cursor:default}
 .tb-submenu .tb-submenu-icon{display:flex;align-items:center;justify-content:center;width:20px;height:20px;flex-shrink:0}
 .tb-submenu .tb-submenu-icon svg{width:19px;height:19px}
+.tb-submenu .tb-submenu-icon [data-svgicon]:not([data-svgcolor]){color:inherit}
 #toolbar button.tb-submenu-active{background:var(--surface2);border-color:var(--accent);color:var(--accent)}
 #toolbar button.tb-submenu-active::before,#toolbar button.tb-submenu-active::after{display:none}
 /* Toolbar icons follow button theme color unless explicitly colored. */
@@ -219,6 +224,66 @@ dialog.app-dialog[open]{display: block}
 dialog.app-dialog::backdrop{background: rgba(0,0,0,.62);backdrop-filter: blur(4px)}
 .app-dialog-panel-medium{box-sizing: border-box;width: min(720px, calc(100vw - 32px));max-height: 90dvh;overflow: auto;display: flex;flex-direction: column;gap: 0;padding: 0;background: var(--surface);color: var(--text);border: 1px solid var(--border);border-radius: var(--radius, 14px)}
 .app-dialog-body{box-sizing: border-box;display: flex;flex-direction: column;flex: 1 1 auto;min-height: 0;min-width: 0;gap: 12px;padding: 14px 14px 12px;overflow: auto}
+dialog.app-dialog :is(.app-dialog-panel-medium,.app-dialog-body,.google-drive-merge-preview){scrollbar-width:thin;scrollbar-color:rgba(0,187,255,.65) transparent}
+dialog.app-dialog :is(.app-dialog-panel-medium,.app-dialog-body,.google-drive-merge-preview)::-webkit-scrollbar{width:5px;height:5px}
+dialog.app-dialog :is(.app-dialog-panel-medium,.app-dialog-body,.google-drive-merge-preview)::-webkit-scrollbar-track{background:transparent}
+dialog.app-dialog :is(.app-dialog-panel-medium,.app-dialog-body,.google-drive-merge-preview)::-webkit-scrollbar-thumb{background:rgba(0,187,255,.65);border-radius:6px}
+dialog.app-dialog :is(.app-dialog-panel-medium,.app-dialog-body,.google-drive-merge-preview)::-webkit-scrollbar-thumb:hover{background:rgba(0,187,255,1)}
+dialog.app-dialog .app-dialog-body.google-drive-merge-scroll.nice-scroll-container{position:relative;scrollbar-width:none}
+dialog.app-dialog .app-dialog-body.google-drive-merge-scroll.nice-scroll-container::-webkit-scrollbar{display:none}
+.app-dialog-warning{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid color-mix(in srgb,#d99519 58%,var(--border));border-radius:9px;background:color-mix(in srgb,#d99519 12%,var(--surface))}
+.app-dialog-warning > span{display:grid;place-items:center;flex:none;width:1.35em;height:1.35em;border-radius:50%;background:#e8ae3f;color:#241500;font-weight:700;line-height:1}
+.google-drive-key-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.google-drive-key-options label{position:relative;display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;cursor:pointer}
+.google-drive-key-options label > span{min-width:0;overflow-wrap:anywhere}
+.google-drive-key-options label:has(:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--surface))}
+.google-drive-key-options label:has(:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.google-drive-key-options input{position:absolute;width:1px;height:1px;padding:0;margin:0;clip-path:inset(50%);overflow:hidden}
+.google-drive-key-option-icon{display:grid;place-items:center;flex:none;font-size:clamp(18px,4vw,28px)}
+.google-drive-key-option-icon [data-svgicon]{color:inherit}
+.google-drive-backup-summary{margin:0;font-weight:600}
+.google-drive-backup-versions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:clamp(8px,2vw,24px);padding:18px 12px;border:1px solid var(--border);border-radius:9px}
+.google-drive-backup-versions.has-direction{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
+.google-drive-backup-versions > div{display:flex;align-items:center;justify-self:center;gap:clamp(6px,1.5vw,14px);min-width:0;max-width:100%}
+.google-drive-backup-info{display:grid;gap:4px;min-width:0;overflow-wrap:anywhere}
+.google-drive-backup-version{color:var(--text-dim);font-size:.875em}
+.google-drive-backup-counts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 0;padding:0;list-style:none}
+.google-drive-backup-counts li{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:40px;padding:6px 8px;border:1px solid color-mix(in srgb,var(--text-dim) 16%,var(--surface));border-radius:6px;background:color-mix(in srgb,var(--text-dim) 8%,var(--surface));color:color-mix(in srgb,var(--text-dim) 56%,var(--surface));font-variant-numeric:tabular-nums}
+.google-drive-backup-counts li.has-items{border-color:var(--accent);color:var(--text)}
+.google-drive-backup-counts li > span:last-child{min-width:3ch;text-align:center;white-space:nowrap}
+.google-drive-backup-counts [data-svgicon]{color:inherit;vertical-align:middle}
+.google-drive-backup-versions > .is-empty{color:var(--text-dim)}
+.google-drive-backup-versions > .is-empty .google-drive-backup-icon{color:inherit}
+@media (max-width:560px){
+  .google-drive-backup-counts{gap:6px}
+  .google-drive-backup-counts li{flex-direction:column;gap:3px;padding:4px 2px}
+}
+.google-drive-backup-icon{display:grid;place-items:center;flex:none;color:var(--accent)}
+.google-drive-backup-icon [data-svgicon]{width:clamp(24px,4vw,40px);height:clamp(24px,4vw,40px);color:inherit}
+.google-drive-backup-versions .google-drive-backup-arrow{color:var(--accent);font-size:1.65em;line-height:1}
+.google-drive-transfer{position:fixed;bottom:20px;left:50%;z-index:300;transform:translateX(-50%);display:grid;gap:8px;box-sizing:border-box;width:min(380px,calc(100vw - 32px));padding:12px 16px;border:1px solid var(--accent);border-radius:10px;background:var(--surface2);color:var(--text)}
+.google-drive-transfer progress{width:100%;accent-color:var(--accent)}
+.google-drive-transfer small{color:var(--text-dim)}
+.google-drive-merge-list{display:grid;gap:14px}
+.google-drive-merge-list > section{overflow:hidden;border:1px solid var(--border);border-radius:9px}
+.google-drive-merge-list h3{margin:0;padding:7px 12px;background:var(--surface2);color:var(--text-dim);font-size:13px;font-weight:600}
+.google-drive-merge-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px 12px;padding:9px 12px;border-top:1px solid var(--border);overflow-wrap:anywhere}
+.google-drive-merge-row summary{font-size:15px;font-weight:600}
+.google-drive-merge-category-icon{margin-inline-end:6px;color:inherit}
+.google-drive-merge-category-icon [data-svgicon]{color:inherit;width:1em;height:1em}
+.google-drive-merge-row summary small{color:var(--text-dim);font-size:12px;font-weight:400;margin-inline-start:6px}
+.google-drive-merge-row label{color:var(--text-dim);font-size:13px}
+.google-drive-merge-help{margin:0;font-size:14px}
+.google-drive-merge-content,.google-drive-merge-preserved{font-size:13px}
+@media (max-width:480px){.google-drive-merge-row{grid-template-columns:minmax(0,1fr)}}
+.google-drive-merge-list summary,.google-drive-merge-list label{cursor:pointer}
+.google-drive-merge-list input{accent-color:var(--accent)}
+.google-drive-merge-content{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.google-drive-merge-content > :only-child{grid-column:1/-1}
+.google-drive-merge-preview{display:grid;gap:4px;max-height:12em;margin:4px 0 0;padding:8px;overflow:auto;white-space:pre-wrap;background:var(--surface2);border-radius:6px}
+.google-drive-merge-preview img{max-width:100%;max-height:8em;object-fit:contain}
+.google-drive-merge-preview .google-drive-card-preview{box-sizing:border-box;width:min(100%,344px);margin-block-end:4px;white-space:normal}
+.google-drive-merge-preserved{color:var(--text-dim)}
 .app-dialog-footer{box-sizing: border-box;display: flex;align-items: center;flex: 0 0 auto;gap: 10px;padding: 12px 14px 14px;border-top: 1px solid var(--border)}
 /* Shared footer actions: secondary left, primary right; no stretching. */
 .app-dialog-footer > .btn-confirm,
@@ -237,4 +302,16 @@ body:is([data-view-mode="card"], [data-view-mode="bookmark"], [data-view-mode="n
 }
 @media (prefers-color-scheme: light) {
   html[data-theme="system"] { --cardbg: #e8ecf0; }
+}
+
+body.tb-right {
+    --toolbar-right-space: 48px;
+}
+
+body.tb-right.tb-labels {
+    --toolbar-right-space: 110px;
+}
+
+body.tb-right > .nice-scrollbar {
+    right: calc(var(--toolbar-right-space) + 2px);
 }

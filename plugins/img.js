@@ -696,6 +696,34 @@ registerPlugin('img', {
       contentEl.style.display = '';
       wrapper.appendChild(contentEl);
       showGallery();
+      self.guestDiff?.syncVisibility();
     };
+    self.guestDiff = GuestDiffCollection.create({ mode: 'img', reload: () => self.render(document.getElementById('app-content')),
+      renderTile(target, { item }) {
+        const image = document.createElement('img'); image.src = item.image; image.alt = ''; target.append(image);
+        const title = document.createElement('h3'); title.textContent = item.name || '未命名母片';
+        const meta = document.createElement('p'); meta.textContent = (item.texts?.length ?? 0) + ' 個文字'; target.append(title, meta);
+      },
+      renderDetail(target, { item }, update) {
+        const preview = document.createElement('canvas'); preview.setAttribute('aria-label', item.name || '圖片母片預覽'); target.append(preview);
+        const image = new Image();
+        image.onload = () => {
+          preview.width = image.naturalWidth; preview.height = image.naturalHeight;
+          const context = preview.getContext('2d'); context.drawImage(image, 0, 0);
+          for (const text of item.texts ?? []) {
+            context.font = buildFont(text); context.fillStyle = text.color || '#ffffff'; context.textBaseline = 'top';
+            context.fillText(text.content || '', text.x, text.y);
+          }
+          update?.();
+        };
+        image.onerror = () => { preview.replaceWith(document.createTextNode('圖片無法載入')); update?.(); }; image.src = item.image;
+        const fields = document.createElement('dl');
+        for (const [index, text] of (item.texts ?? []).entries()) {
+          const title = document.createElement('dt'); title.textContent = '文字 ' + (index + 1);
+          const value = document.createElement('dd'); value.textContent = text.content || ''; fields.append(title, value);
+        }
+        target.append(fields);
+      }
+    });
   }
 });
