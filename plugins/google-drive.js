@@ -567,7 +567,7 @@
       dialog.innerHTML = `
         <section class="app-dialog-panel-medium">
           <header class="app-modal-header">
-            <span class="app-modal-header-icon" aria-hidden="true">${resolveIcon(upload ? 'import' : direction ? 'export' : 'cloudOutline')}</span>
+            <span class="app-modal-header-icon" aria-hidden="true">${resolveIcon(upload ? (category ? 'import' : 'cloudfullupload') : direction ? 'export' : 'cloudOutline')}</span>
             <div class="app-modal-header-info">
               <h2 class="app-modal-header-title" id="googleDriveBackupTitle">${title}</h2>
             </div>
@@ -1436,7 +1436,7 @@
           if (category) void syncBackup('upload', category);
         }
       },
-      { label: '整站備份至 Google Drive', icon: resolveIcon('cloudOutline'), open: () => void syncBackup('upload') },
+      { label: '整站備份至 Google Drive', icon: resolveIcon('cloudfullupload'), open: () => void syncBackup('upload') },
       {
         label: '從 Google Drive 下載還原',
         icon: resolveIcon('export'),
