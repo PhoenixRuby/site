@@ -262,7 +262,13 @@
     const packages = { ...previous?.packages };
     const deviceId = backupDeviceId();
     const categories = categoryOnly && previous ? [categoryOnly] : AccountStorage.backupCategories;
-    const parts = await AccountStorage.splitBackup(snapshot.envelope, categories, packages);
+    const migrateScopedUpload = categoryOnly && !previous && options.preserveLegacyModules;
+    const parts = await AccountStorage.splitBackup(snapshot.envelope, migrateScopedUpload ? [categoryOnly] : categories, packages);
+    if (migrateScopedUpload) {
+      const others = categories.filter(category => category !== categoryOnly);
+      const oldEnvelope = remote ? await readBackupEnvelope(token, remote, progress) : null;
+      Object.assign(parts, await AccountStorage.splitBackup(oldEnvelope, others, packages));
+    }
     for (const category of categories) {
       const part = parts[category];
       if (packages[category]?.contentDigest === part.digest) continue;
@@ -515,11 +521,16 @@
       dialog.className = 'app-dialog';
       dialog.setAttribute('aria-labelledby', 'googleDriveBackupTitle');
       const upload = direction === 'upload';
-      const title = category ? '從 Google Drive 下載目前模組' : '上傳備份至 Google Drive';
+      const title = upload ? (category ? '上傳目前模組至 Google Drive' : '整站備份至 Google Drive')
+        : '從 Google Drive 下載目前模組';
       const categoryIndex = AccountStorage.backupCategories.indexOf(category);
       const canReview = !direction && remote && (local || categoryIndex >= 0);
-      const detail = category
-        ? '逐筆比對目前模組，選擇要套用至此裝置的雲端資料。'
+      const detail = direction === 'restore'
+        ? '本機尚無卡片。確認後，會將雲端卡片還原到此裝置。'
+        : upload && category ? (remote
+          ? '確認後，會用本機目前模組的資料覆蓋雲端同一模組。'
+          : '確認後，會備份本機目前模組的資料。')
+        : category ? '逐筆比對目前模組，選擇要套用至此裝置的雲端資料。'
         : remote ? '上傳會以此裝置的帳號資料覆蓋 Google Drive 的現有備份。請確認是否覆蓋。'
           : '確認後，會把本機資料上傳到 Google Drive，建立第一份備份。';
       const renderVersion = (target, data, timeLabel) => {
@@ -719,7 +730,7 @@
       }
       if (!rows.length || (guestAccount && preserved === rows.length)) {
         list.textContent = guestAccount ? '沒有可匯入的訪客項目。'
-          : '沒有同 ID 且更新時間不同的項目。';
+          : '沒有可套用到本機的雲端項目。';
       }
       rows.forEach((row, index) => {
         if (guestAccount && row.cloud === undefined) return;
@@ -746,7 +757,7 @@
         const summary = document.createElement('summary');
         summary.textContent = row.title + ' ';
         const state = document.createElement('small');
-        state.textContent = !hasCloud ? '僅此裝置的帳號有' : row.blocked ? '無法配對' : hasLocal ? '內容不同' : '僅來源有';
+        state.textContent = !hasCloud ? '僅此裝置的帳號有' : row.blocked ? '無法配對' : hasLocal ? '內容不同' : guestAccount ? '僅訪客資料有' : '僅雲端有';
         summary.append(state);
         details.append(summary);
         details.addEventListener('toggle', () => {
@@ -779,13 +790,17 @@
           const label = document.createElement('label');
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
+          checkbox.setAttribute('role', 'switch');
           checkbox.addEventListener('change', () => {
             if (checkbox.checked) chosen.add(index);
             else chosen.delete(index);
             apply.disabled = chosen.size === 0;
           });
           label.append(checkbox, hasLocal ? (guestAccount ? ' 採用訪客版本' : ' 採用雲端版本') : ' 加入');
-          item.append(label);
+          const options = document.createElement('span');
+          options.className = 'guest-diff-pin-options';
+          options.append(label);
+          item.append(options);
         }
         groups.get(category).append(item);
       });
@@ -874,6 +889,7 @@
         let action;
         let mergePlan;
         let remoteItems;
+        let restoreRows;
         if (canAutoUpload && !remote) action = 'upload';
         else if (manual || autoReview || canAutoUpload) {
           if (remote) {
@@ -886,7 +902,8 @@
               remoteItems = await AccountStorage.inspectBackup(envelope);
 
               if (local || comparisonCategory) {
-                mergePlan = await AccountStorage.prepareBackupMerge(local?.envelope ?? null, envelope, comparisonCategory);
+                mergePlan = await AccountStorage.prepareBackupMerge(local?.envelope ?? null, envelope, comparisonCategory,
+                  { includeCloudCards: mode === 'download' });
                 if (mergePlan.identical) {
                   if ((await AccountStorage.snapshot())?.envelope !== local?.envelope ||
                       (await latestBackup(token))?.id !== remote.id) {
@@ -907,7 +924,16 @@
               progress.close();
             }
           }
-          const direction = mode === 'upload' || canAutoUpload ? 'upload' : undefined;
+          if (mode === 'download' && comparisonCategory === 'card' && remote &&
+              (local?.items?.[AccountStorage.backupCategories.indexOf('card')] ?? 0) === 0) {
+            restoreRows = mergePlan.rows.flatMap((row, index) =>
+              row.label === '卡片' && row.local === undefined && row.cloud !== undefined && !row.blocked ? [index] : []);
+            if (!restoreRows.length) {
+              showToast('這份雲端備份沒有可還原的卡片。');
+              return;
+            }
+          }
+          const direction = restoreRows ? 'restore' : mode === 'upload' || canAutoUpload ? 'upload' : undefined;
           if (canAutoUpload && !mergePlan?.requiresOverwrite) {
             action = 'upload';
           } else {
@@ -916,20 +942,23 @@
           }
         }
         if (!action || action === 'cancel' || session !== account) return;
-        const progress = showTransferProgress(action === 'review' ? '正在整理本機與雲端差異…' : '正在準備上傳備份…');
+        const progress = showTransferProgress(action === 'restore' ? '正在準備還原卡片…'
+          : action === 'review' ? '正在整理本機與雲端差異…' : '正在準備上傳備份…');
         try {
           const latest = await latestBackup(token);
           if (latest?.id !== remote?.id) throw new Error('雲端版本已更新，請重新比較。');
-          if (action === 'review') {
+          if (action === 'review' || action === 'restore') {
             const plan = mergePlan;
             progress.close();
-            let chosen;
-            do {
-              chosen = await chooseMergeItems(plan.rows, '', true);
-              if (chosen !== 'back') break;
-              const action = await chooseBackupAction(local, remote, undefined, remoteItems, comparisonCategory);
-              if (action !== 'review' || session !== account) return;
-            } while (chosen === 'back');
+            let chosen = restoreRows;
+            if (action === 'review') {
+              do {
+                chosen = await chooseMergeItems(plan.rows, '', true);
+                if (chosen !== 'back') break;
+                const review = await chooseBackupAction(local, remote, undefined, remoteItems, comparisonCategory);
+                if (review !== 'review' || session !== account) return;
+              } while (chosen === 'back');
+            }
             if (!chosen?.length || session !== account) return;
             const applyProgress = showTransferProgress('正在加密並儲存所選項目…');
             try {
@@ -946,9 +975,16 @@
           const current = await AccountStorage.snapshot();
           if (current?.envelope !== local.envelope) throw new Error('本機版本已更新，請重新比較。');
           progress.phase('正在上傳備份至 Google Drive…');
-          const uploaded = await publishCategoryBackup(token, local, remote, progress, { snapshotDigest: digest });
+          const uploaded = await publishCategoryBackup(token, local, remote, progress,
+            category ? { categoryOnly: category, preserveLegacyModules: true } : { snapshotDigest: digest });
           if (!uploaded.id) throw new Error('Google Drive 未回傳備份識別碼。');
           if (session !== account) return;
+          if (category) {
+            account.syncPaused = true;
+            sessionStorage.setItem(marker + ':paused', 'true');
+            showToast('已上傳目前模組至 Google Drive。');
+            return;
+          }
           localStorage.setItem(marker, uploaded.id);
           account.syncPaused = false;
           sessionStorage.removeItem(marker + ':paused');
@@ -1390,7 +1426,16 @@
         showCount: () => plugin.showCount(),
         open: () => void importLegacyData()
       },
-      { label: '上傳備份至 Google Drive', icon: resolveIcon('import'), open: () => void syncBackup('upload') },
+      {
+        label: '上傳目前模組至 Google Drive',
+        icon: resolveIcon('import'),
+        hidden: () => !currentBackupCategory(),
+        open: () => {
+          const category = currentBackupCategory();
+          if (category) void syncBackup('upload', category);
+        }
+      },
+      { label: '整站備份至 Google Drive', icon: resolveIcon('cloudOutline'), open: () => void syncBackup('upload') },
       {
         label: '從 Google Drive 下載還原',
         icon: resolveIcon('export'),

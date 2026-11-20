@@ -124,7 +124,7 @@ const AccountStorage = (() => {
     vault.queue.catch(error => showToast('本機加密儲存失敗：' + error.message));
   }
 
-  function prepareMerge(localValues, cloudValues, onlyVersionedMatches = false) {
+  function prepareMerge(localValues, cloudValues, onlyVersionedMatches = false, includeCloudCards = false) {
     const rows = [];
     const writes = [];
     const handled = new Set();
@@ -143,7 +143,7 @@ const AccountStorage = (() => {
     const title = (value, index) => value?.title || value?.name || value?.label ||
       (typeof value === 'string' ? '項目 ' + (index + 1) : value?.id || '項目 ' + (index + 1));
 
-    function compareList(label, local, cloud, identity, write, summarize = value => value) {
+    function compareList(label, local, cloud, identity, write, summarize = value => value, includeCloudOnly = false) {
       const claimed = new Set();
       const positions = new Map();
       const cloudIdentityCounts = new Map();
@@ -173,13 +173,14 @@ const AccountStorage = (() => {
         return index;
       });
       cloud.forEach((value, index) => {
-        if (!onlyVersionedMatches && matches[index] !== undefined) return;
+        if ((!onlyVersionedMatches || includeCloudOnly) && matches[index] !== undefined) return;
         const id = identity(value);
         const candidate = cloudIdentityCounts.get(id) === 1 ? positions.get(id) : undefined;
         const matched = candidate >= 0 && (onlyVersionedMatches || !claimed.has(candidate));
         const previous = matched ? local[candidate] : undefined;
         const verifiable = versionPair(previous, value);
-        if (onlyVersionedMatches && (!verifiable || revisionTime(previous) === revisionTime(value))) return;
+        const cloudOnly = includeCloudOnly && !matched && !positions.has(id);
+        if (onlyVersionedMatches && !cloudOnly && (!verifiable || revisionTime(previous) === revisionTime(value))) return;
         const blocked = id !== null && !matched && (positions.has(id) || cloudIdentityCounts.get(id) > 1);
         if (matched) claimed.add(candidate);
         const row = rows.length;
@@ -224,7 +225,7 @@ const AccountStorage = (() => {
           : []);
         value.forEach((_, index) => order.add(index + 1));
         result.set('card_order', JSON.stringify([...order]));
-      });
+      }, undefined, includeCloudCards && key === 'site_data');
     }
 
     const viewerKey = 'viewer-recent-folders';
@@ -303,8 +304,8 @@ const AccountStorage = (() => {
     };
   }
 
-  function createMergePlan(vault, localEnvelope, local, cloud, preserved = new Map(), onlyVersionedMatches = false) {
-    const plan = prepareMerge(local, cloud, onlyVersionedMatches);
+  function createMergePlan(vault, localEnvelope, local, cloud, preserved = new Map(), onlyVersionedMatches = false, includeCloudCards = false) {
+    const plan = prepareMerge(local, cloud, onlyVersionedMatches, includeCloudCards);
     const normalized = value => {
       try {
         return JSON.stringify(JSON.parse(value), (_, item) => {
@@ -387,7 +388,7 @@ const AccountStorage = (() => {
     async splitBackup(envelope, categories = backupCategories, previous = {}) {
       const vault = active;
       if (!vault) throw new Error('請先登入。');
-      const entries = await readEnvelope(envelope, vault.key, vault.additionalData);
+      const entries = envelope === null ? [] : await readEnvelope(envelope, vault.key, vault.additionalData);
       const groups = Object.fromEntries(backupCategories.map(category => [category, []]));
       for (const entry of entries) groups[backupCategory(entry[0])].push(entry);
       return Object.fromEntries(await Promise.all(categories.map(async category => {
@@ -530,7 +531,7 @@ const AccountStorage = (() => {
         }
       };
     },
-    async prepareBackupMerge(localEnvelope, remoteEnvelope, category) {
+    async prepareBackupMerge(localEnvelope, remoteEnvelope, category, { includeCloudCards = false } = {}) {
       const vault = active;
       if (!vault) throw new Error('請先登入。');
       const [local, cloud] = await Promise.all([localEnvelope, remoteEnvelope].map(async envelope =>
@@ -539,7 +540,7 @@ const AccountStorage = (() => {
       if (!backupCategories.includes(category)) throw new Error('備份分類不正確。');
       const belongs = ([key]) => backupCategory(key) === category;
       return createMergePlan(vault, localEnvelope, new Map([...local].filter(belongs)),
-        new Map([...cloud].filter(belongs)), new Map([...local].filter(entry => !belongs(entry))), true);
+        new Map([...cloud].filter(belongs)), new Map([...local].filter(entry => !belongs(entry))), true, category === 'card' && includeCloudCards);
     },
     async prepareGuestMerge(expected, entries) {
       const vault = active;
