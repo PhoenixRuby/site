@@ -526,7 +526,7 @@
       const categoryIndex = AccountStorage.backupCategories.indexOf(category);
       const canReview = !direction && remote && (local || categoryIndex >= 0);
       const detail = direction === 'restore'
-        ? '本機尚無卡片。確認後，會將雲端卡片還原到此裝置。'
+        ? '本機目前模組尚無資料。確認後，會將此模組的雲端備份還原到此裝置。'
         : upload && category ? (remote
           ? '確認後，會用本機目前模組的資料覆蓋雲端同一模組。'
           : '確認後，會備份本機目前模組的資料。')
@@ -878,6 +878,8 @@
         const canAutoUpload = local && mode === 'save' && (!remote || sameBase);
         const autoReview = !manual && remote && (!local || !sameBase);
         const comparisonCategory = category ?? (autoReview ? currentBackupCategory() : undefined);
+        const categoryIndex = AccountStorage.backupCategories.indexOf(comparisonCategory);
+        const localModuleEmpty = categoryIndex >= 0 && (local?.items?.[categoryIndex] ?? 0) === 0;
         if (remote && (mode === 'download' || autoReview)) {
           account.syncPaused = true;
           clearTimeout(syncTimer);
@@ -889,7 +891,7 @@
         let action;
         let mergePlan;
         let remoteItems;
-        let restoreRows;
+        let restoreEmptyModule = false;
         if (canAutoUpload && !remote) action = 'upload';
         else if (manual || autoReview || canAutoUpload) {
           if (remote) {
@@ -924,16 +926,14 @@
               progress.close();
             }
           }
-          if (mode === 'download' && comparisonCategory === 'card' && remote &&
-              (local?.items?.[AccountStorage.backupCategories.indexOf('card')] ?? 0) === 0) {
-            restoreRows = mergePlan.rows.flatMap((row, index) =>
-              row.label === '卡片' && row.local === undefined && row.cloud !== undefined && !row.blocked ? [index] : []);
-            if (!restoreRows.length) {
-              showToast('這份雲端備份沒有可還原的卡片。');
+          if ((mode === 'download' || autoReview) && localModuleEmpty) {
+            if (!(remoteItems?.[categoryIndex] > 0)) {
+              showToast('這份雲端備份沒有目前模組的資料。');
               return;
             }
+            restoreEmptyModule = true;
           }
-          const direction = restoreRows ? 'restore' : mode === 'upload' || canAutoUpload ? 'upload' : undefined;
+          const direction = restoreEmptyModule ? 'restore' : mode === 'upload' || canAutoUpload ? 'upload' : undefined;
           if (canAutoUpload && !mergePlan?.requiresOverwrite) {
             action = 'upload';
           } else {
@@ -942,7 +942,7 @@
           }
         }
         if (!action || action === 'cancel' || session !== account) return;
-        const progress = showTransferProgress(action === 'restore' ? '正在準備還原卡片…'
+        const progress = showTransferProgress(action === 'restore' ? '正在準備還原目前模組…'
           : action === 'review' ? '正在整理本機與雲端差異…' : '正在準備上傳備份…');
         try {
           const latest = await latestBackup(token);
@@ -950,7 +950,7 @@
           if (action === 'review' || action === 'restore') {
             const plan = mergePlan;
             progress.close();
-            let chosen = restoreRows;
+            let chosen;
             if (action === 'review') {
               do {
                 chosen = await chooseMergeItems(plan.rows, '', true);
@@ -959,11 +959,12 @@
                 if (review !== 'review' || session !== account) return;
               } while (chosen === 'back');
             }
-            if (!chosen?.length || session !== account) return;
+            if (session !== account || (action === 'review' && !chosen?.length)) return;
             const applyProgress = showTransferProgress('正在加密並儲存所選項目…');
             try {
               if ((await latestBackup(token))?.id !== remote.id) throw new Error('雲端版本已更新，請重新比較。');
-              await plan.apply(chosen);
+              if (action === 'restore') await plan.restoreModule();
+              else await plan.apply(chosen);
               sessionStorage.setItem(marker + ':paused', 'true');
               sessionStorage.setItem('site-google-drive-import-message', '已套用所選項目到本機。如要更新雲端，請手動上傳備份。');
               location.reload();

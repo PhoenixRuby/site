@@ -321,8 +321,14 @@ const AccountStorage = (() => {
       requiresOverwrite: plan.rows.some(row => row.cloud !== undefined && !row.verifiedUpdate),
       identical: local.size === cloud.size && [...local].every(([key, value]) =>
         cloud.has(key) && normalized(value) === normalized(cloud.get(key))),
+      async restoreModule() {
+        if (!onlyVersionedMatches) throw new Error('請先選擇要還原的模組。');
+        await this.applyValues(new Map([...preserved, ...local, ...cloud]));
+      },
       async apply(chosen) {
-        const values = new Map([...preserved, ...plan.build(new Set(chosen))]);
+        await this.applyValues(new Map([...preserved, ...plan.build(new Set(chosen))]));
+      },
+      async applyValues(values) {
         const write = async () => {
           const envelope = await seal(vault, JSON.stringify([...values]));
           if (vault !== active || vault.pending || vault.saved !== localEnvelope ||
